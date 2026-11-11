@@ -504,7 +504,7 @@ class Tracking:
             f_cur.img, f_ref.img, des_cur, des_ref, kps1=kps_cur, kps2=kps_ref
         )
         matching_result.idxs2 = idxs_ref_map_points[
-            matching_result.idxs2
+            np.asarray(matching_result.idxs2, dtype=int)  # 0 matches: empty float array can't index
         ]  # map back to the original reference keypoints
 
         self.timer_match.refresh()

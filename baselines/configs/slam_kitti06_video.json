@@ -1,0 +1,41 @@
+// WP1 SLAM baselines: KITTI 06, mono, color video shipped with pySLAM
+// format: pySLAM evaluation config (see pyslam/evaluation/configs/evaluation.json)
+// run (repo root): python main_slam_evaluation.py -c baselines/configs/slam_kitti06_video.json
+{
+  "num_threads": 1,                     // runs sequential, no interference
+  "number_of_runs_per_dataset": 3,      // SLAM non-deterministic -> mean over runs
+
+  "dataset_type": "VIDEO_DATASET",
+  "sensor_type": "mono",
+  "dataset_base_path": "data/videos",   // overridden per dataset (template_vars)
+
+  "datasets": [
+    {
+      "name": "kitti06",
+      "settings_path": "settings/KITTI04-12.yaml",   // intrinsics, nFeatures = 2000 (all presets)
+      "template_vars": {
+        "dataset_base_path": "data/videos/kitti06",
+        "dataset_name": "video_color.mp4",
+        "timestamps_path": "times.txt"
+      }
+    }
+  ],
+
+  // shared by all presets: same loop detector
+  // DBOW3_INDEPENDENT: own ORB features -> loop closing identical for every front-end
+  "common_parameters": {
+    "settings": {
+      "LoopDetectionConfig.name": "DBOW3_INDEPENDENT"
+    }
+  },
+
+  // only difference between presets: the matcher
+  "presets": [
+    { "name": "orb2",       "custom_parameters": { "settings": { "FeatureTrackerConfig.name": "ORB2" } } },
+    { "name": "superpoint", "custom_parameters": { "settings": { "FeatureTrackerConfig.name": "SUPERPOINT" } } },
+    { "name": "lightglue",  "custom_parameters": { "settings": { "FeatureTrackerConfig.name": "LIGHTGLUE" } } }
+  ],
+
+  "output_path": "wp1_slam_kitti06",    // -> results/eval_<date>/wp1_slam_kitti06/
+  "saved_trajectory_format_type": "kitti"
+}

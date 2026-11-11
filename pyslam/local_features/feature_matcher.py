@@ -596,8 +596,8 @@ class FeatureMatcher:
             # print(matches01['matches'])
             idxs0 = matches01["matches"][0][:, 0].cpu().tolist()
             idxs1 = matches01["matches"][0][:, 1].cpu().tolist()
-            result.idxs1 = np.array(idxs0)
-            result.idxs2 = np.array(idxs1)
+            result.idxs1 = np.array(idxs0, dtype=int)  # int also for 0 matches (empty float array can't index)
+            result.idxs2 = np.array(idxs1, dtype=int)
             if row_matching:
                 result.idxs1, result.idxs2 = MatcherUtils.filterNonRowMatches(
                     kps1, result.idxs1, kps2, result.idxs2, max_disparity=max_disparity

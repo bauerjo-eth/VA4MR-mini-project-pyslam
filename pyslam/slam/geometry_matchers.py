@@ -1229,7 +1229,7 @@ def _search_frame_for_triangulation(
         timerMatch = Timer()
         timerMatch.start()
         matching_result = FeatureTrackerShared.feature_matcher.match(
-            kf1.img, kf2.img, kf1.des, kf2.des
+            kf1.img, kf2.img, kf1.des, kf2.des, kps1=kf1.kps, kps2=kf2.kps  # LightGlue needs the keypoints
         )
         idxs1, idxs2 = matching_result.idxs1, matching_result.idxs2
         if __debug__:

@@ -23,6 +23,7 @@ import numpy as np
 import math
 
 import os
+import sys
 from datetime import datetime
 import shutil
 import subprocess
@@ -262,6 +263,11 @@ class SlamEvaluationManager:
             config_vocabulary["start_frame_id"] = dataset["start_frame_id"]
         else:
             config_vocabulary["start_frame_id"] = "0"
+        # optional per-dataset "template_vars": override / fill template placeholders
+        # - e.g. VIDEO_DATASET: dataset_base_path, dataset_name (file), timestamps_path
+        # - dataset "name" stays the label of output folders and tables
+        for key, value in dataset.get("template_vars", {}).items():
+            config_vocabulary[key] = str(value)
 
         current_config_file_str = replace_template_entries(self.template_config, config_vocabulary)
         # print(f"current_config_file_str: {current_config_file_str}")
@@ -270,6 +276,11 @@ class SlamEvaluationManager:
         current_config_file = yaml.safe_load(current_config_file_str)
         # Clean up unused dataset sections
         current_config_file = remove_unused_datasets(current_config_file)
+        # preset "config" section (e.g. GLOBAL_PARAMETERS) -> merged into config.yaml
+        # - documented in configs/evaluation.json, was silently ignored before
+        preset_config = preset_parameters.get("config")
+        if preset_config:
+            current_config_file = merge_dicts(current_config_file, preset_config)
         # print(f'current_config_file: {current_config_file}')
 
         # Save the config file to be used
@@ -297,13 +308,14 @@ class SlamEvaluationManager:
         Printer.bold(f"log_output_path: {log_output_path}")
         Printer.yellow(f"To see the progress run: $ tail -f {main_log_output_file}")
 
-        source_command = "source " + kRootFolder + "pyenv-activate.sh; "
+        # run main_slam.py with the active interpreter (venv / conda / pixi)
+        # - old: source kRootFolder + "pyenv-activate.sh" -> missing "/", /bin/sh aborts
+        # - fixed path no option: would switch to the default pyslam env
         main_slam_path = os.path.join(kRootFolder, "main_slam.py")
         command = (
-            source_command
-            + main_slam_path
+            f'"{sys.executable}" -O "{main_slam_path}"'
             + " --headless --no_output_date -c "
-            + current_config_file_path
+            + f'"{current_config_file_path}"'
         )
 
         print("command: " + command)
