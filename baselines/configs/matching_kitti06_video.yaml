@@ -1,0 +1,35 @@
+# WP1 matching baselines: KITTI 06, color video shipped with pySLAM
+# format: pySLAM config.yaml (DATASET sections) + MATCHING_BASELINE section
+# run (repo root): python baselines/matching_baseline.py baselines/configs/matching_kitti06_video.yaml
+
+DATASET:
+  type: VIDEO_DATASET
+
+VIDEO_DATASET:
+  type: video
+  sensor_type: mono
+  base_path: data/videos/kitti06
+  name: video_color.mp4
+  settings: settings/KITTI04-12.yaml   # intrinsics, nFeatures = 2000 (all matchers)
+  groundtruth_file: groundtruth.txt
+  timestamps: times.txt
+  start_frame_id: 0
+
+# required by pySLAM Config, unused here
+SYSTEM_STATE:
+  load_state: False
+  folder_path: results/slam_state
+SAVE_TRAJECTORY:
+  save_trajectory: False
+GLOBAL_PARAMETERS:
+
+MATCHING_BASELINE:
+  matchers: [ORB2, SUPERPOINT, LIGHTGLUE, LIGHTGLUE_FULL]   # FeatureTrackerConfigs names, same as SLAM presets
+                                            # LIGHTGLUE_FULL: LIGHTGLUE with all 9 layers (pySLAM: 2), no SLAM preset
+  frame_gaps: [1, 5, 10]                    # pair = (i, i + gap); larger gap -> harder
+  frame_step: 10                            # reference frame every N frames
+  epipolar_threshold_px: 5.0                # correct match: epipolar distance below (both images)
+                                            # KITTI GT noise: RANSAC inliers ~1.2 px from GT line at gap 10 -> 2 px too strict
+  ransac_threshold_px: 1.0                  # essential matrix RANSAC
+  auc_thresholds_deg: [5, 10, 20]           # pose AUC, error = max(rotation, translation direction)
+  output_path: results/wp1_matching_kitti06
