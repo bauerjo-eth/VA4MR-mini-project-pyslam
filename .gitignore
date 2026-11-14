@@ -76,6 +76,13 @@ cpp/core/slam/tests_py/test_data
 leftover/
 results/
 
+# geomatch: keep the data/ and results/ folders in git, but ignore everything inside them
+!geomatch/results/
+geomatch/results/*
+!geomatch/results/.gitkeep
+geomatch/data/*
+!geomatch/data/.gitkeep
+
 cpp/test_opencv_casters/build
 cpp/test_opencv_casters/lib
 cpp/modules/test_opencv_casters/build
