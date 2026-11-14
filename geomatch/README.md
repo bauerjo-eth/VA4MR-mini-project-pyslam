@@ -85,3 +85,13 @@ def my_filter(ctx, my_param=1.0, **params):
 `ctx` (a `MatchContext`) holds the keypoints, descriptors, depth maps and camera intrinsics.
 Do not use the ground-truth poses `ctx.T1` or `ctx.T2` in a real filter. They are only there
 for the reference filter.
+
+## To-do
+
+- [ ] **Different image pair creation algorithm.** Pairs are currently fixed frame offsets
+  (every 100th frame, partner 10 frames later). Pick pairs by their true camera motion instead,
+  so the difficulty is controlled.
+- [ ] **Flowchart in this README** explaining the approach: images → depth and keypoints →
+  descriptor → matcher → filter → grading, and where WP1–WP3 plug in.
+- [ ] **`cache_depth_pictures.py`**: run once per dataset to save all depth maps to `data/`,
+  so research runs don't repeat the Depth Anything 3 inference.
