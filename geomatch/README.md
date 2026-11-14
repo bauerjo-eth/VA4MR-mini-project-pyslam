@@ -11,10 +11,10 @@ for Robust Visual SLAM*.
 
 | Work package | Topic | Owner |
 |---|---|---|
-| WP1 | Appearance baselines, depth evaluation | Jonas |
+| WP1 | Appearance baselines, depth evaluation | Jonas & Robin |
 | WP2 | Geometry-aware descriptors | Gregor |
 | WP3 | Geometric match filtering | David |
-| WP4 | SLAM integration, experiments | Jonas |
+| WP4 | SLAM integration, experiments | Jonas & Robin |
 
 ## What exists so far
 
