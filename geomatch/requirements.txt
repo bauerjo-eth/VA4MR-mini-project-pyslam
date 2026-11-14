@@ -12,6 +12,7 @@ opencv-python==4.11.0.86
 matplotlib==3.7.5
 torch==2.6.0
 torchvision==0.21.0
+pyyaml==6.0.3          # evaluation configs
 
 # Depth Anything 3 runtime (imported by depth_anything_3.api)
 addict==2.4.0
