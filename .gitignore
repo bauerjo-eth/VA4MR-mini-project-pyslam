@@ -76,7 +76,8 @@ cpp/core/slam/tests_py/test_data
 leftover/
 results/
 
-# geomatch: keep the data/ and results/ folders in git, but ignore everything inside them
+.venv/
+
 !geomatch/results/
 geomatch/results/*
 !geomatch/results/.gitkeep
