@@ -17,6 +17,7 @@ import time
 from pathlib import Path
 
 import numpy as np
+from tqdm import tqdm
 
 from geomatch.depth import predict_depth
 
@@ -40,11 +41,13 @@ def cache_depth_maps(frames, model, dataset):
     folder.mkdir(parents=True, exist_ok=True)
     missing = [i for i in sorted(frames) if not depth_path(folder, i).exists()]
 
+    log.info(f"Depth maps: {len(frames) - len(missing)} cached, {len(missing)} to predict")
+    log.debug(f"depth cache folder: {folder}")
     t0 = time.perf_counter()
-    for i in missing:
+    for i in tqdm(missing, desc="Predicting depth", unit="frame", disable=not missing):
         np.save(depth_path(folder, i), predict_depth(frames[i], model))
-    log.info(f"depth cache {folder}: {len(frames) - len(missing)} reused, "
-             f"{len(missing)} computed ({time.perf_counter() - t0:.1f} s)")
+    if missing:
+        log.debug(f"predicted {len(missing)} depth maps in {time.perf_counter() - t0:.1f} s")
     return folder
 
 

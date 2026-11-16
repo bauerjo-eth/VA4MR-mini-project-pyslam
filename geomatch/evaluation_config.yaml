@@ -16,9 +16,9 @@ dataset:
   poses: data/videos/kitti06/06.txt               # KITTI format: 3x4 camera-to-world per frame
   intrinsics: {fx: 707.0912, fy: 707.0912, cx: 601.8873, cy: 183.1104}   # settings/KITTI04-12.yaml
   pairs:                     # image pairs (s, s + gap) for s = start, start + step, ... < stop
-    start: 50                # frames 0-5 have a slightly wrong ground-truth rotation
+    start: 6                # frames 0-5 have a slightly wrong ground-truth rotation
     stop: 1050
-    step: 100
+    step: 1
     gap: 10                  # frames between the two images (bigger = harder)
 
 # ---------- depth prediction ----------
