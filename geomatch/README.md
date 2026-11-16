@@ -153,6 +153,13 @@ methods:
   descriptor → matcher → filter → grading, and where WP1–WP3 plug in.
 - [x] **`cache_depth_pictures.py`**: run once per dataset to save all depth maps to `data/`,
   so research runs don't repeat the Depth Anything 3 inference.
+- [ ] **Recall in `summary.csv`.** Add `correct` (kept × precision), `wrong` and `recall`
+  (correct matches kept ÷ correct matches before filtering). Precision alone hides filters that
+  also throw away good matches.
+- [ ] **Relative pose AUC.** For each pair, estimate the camera motion from the kept matches
+  (essential matrix + RANSAC), compare its rotation and translation direction with the ground
+  truth, and report AUC@5°/10°/20° (as in SuperGlue/LightGlue). This is the standard bridge
+  between matching quality and SLAM quality.
 - [x] **Cache descriptors across methods** in `evaluation_pipeline.py`. Methods with the same
   descriptor config currently recompute it on every image (e.g. RootSIFT four times per image
   in the default config). Compute each one once per image and reuse it. Keep the timing fair:
