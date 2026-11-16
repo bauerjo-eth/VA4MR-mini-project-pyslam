@@ -11,6 +11,7 @@ name: kitti06_baseline
 
 # ---------- which images ----------
 dataset:
+  name: kitti06                                   # also names the depth cache folder
   video: data/videos/kitti06/video_color.mp4      # paths are relative to the repo root
   poses: data/videos/kitti06/06.txt               # KITTI format: 3x4 camera-to-world per frame
   intrinsics: {fx: 707.0912, fy: 707.0912, cx: 601.8873, cy: 183.1104}   # settings/KITTI04-12.yaml
