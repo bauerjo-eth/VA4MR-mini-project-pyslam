@@ -29,6 +29,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 import yaml
+from tqdm import tqdm
 
 from geomatch.cache_depth_pictures import cache_depth_maps, load_depth
 from geomatch.descriptors import compute_descriptors, depth_at
@@ -44,12 +45,15 @@ log = logging.getLogger("geomatch")
 # ---------- setup ----------
 
 def setup_output(cfg, config_path):
-    """Create the results folder, copy the config into it, and log to console + log.txt."""
+    """Create the results folder and copy the config into it. Logging: log.info() goes to the
+    console and log.txt, log.debug() (details) only to log.txt."""
     out_dir = RESULTS_DIR / f"{cfg['name']}_{datetime.now():%Y-%m-%d_%H%M%S}"
     out_dir.mkdir(parents=True)
     shutil.copy(config_path, out_dir / "config.yaml")
-    log.setLevel(logging.INFO)
-    for handler in (logging.StreamHandler(), logging.FileHandler(out_dir / "log.txt", encoding="utf-8")):
+    log.setLevel(logging.DEBUG)
+    console, logfile = logging.StreamHandler(), logging.FileHandler(out_dir / "log.txt", encoding="utf-8")
+    console.setLevel(logging.INFO)
+    for handler in (console, logfile):
         handler.setFormatter(logging.Formatter("%(message)s"))
         log.addHandler(handler)
     return out_dir
@@ -88,6 +92,15 @@ def split_type(block):
     """Config block -> (registry name, parameters), e.g. {type: x, w: 1} -> ("x", {"w": 1})."""
     params = dict(block)
     return params.pop("type"), params
+
+
+def describe(method):
+    """Readable combination, e.g. 'rootsift_depth(w=0.3) + nn_ratio(ratio=0.8) + none'."""
+    def part(block):
+        name, params = split_type(block)
+        args = ", ".join(f"{k}={v}" for k, v in params.items())
+        return f"{name}({args})" if args else name
+    return " + ".join(part(method[k]) for k in ("descriptor", "matcher", "filter"))
 
 
 def cached(cache, key, compute):
@@ -191,16 +204,23 @@ def main():
     out_dir = setup_output(cfg, args.config)
     pairs, frames, poses, K = load_dataset(cfg["dataset"])
     correct_px = cfg["grading"]["correct_px"]
-    log.info(f"{cfg['name']}: {len(pairs)} pairs x {len(cfg['methods'])} methods -> {out_dir}")
+    log.info(f"Running evaluation pipeline: {cfg['name']} ({len(pairs)} image pairs x {len(cfg['methods'])} methods)")
+    log.info(f"Results: {out_dir}")
     depth_dir = cache_depth_maps(frames, cfg["depth"]["model"], cfg["dataset"]["name"])
 
+    log.info("Methods (descriptor + matcher + filter):")
+    for method in cfg["methods"]:
+        log.info(f"  {method['name']}: {describe(method)}")
+
     rows, epi_errors = [], {m["name"]: [] for m in cfg["methods"]}
-    for n, (f1, f2) in enumerate(pairs, 1):
+    progress = tqdm(pairs, desc="Image pairs", unit="pair")
+    for f1, f2 in progress:
         depth1, depth2 = load_depth(depth_dir, f1), load_depth(depth_dir, f2)
-        log.info(f"pair {n}/{len(pairs)}: frames {f1}-{f2}")
+        log.debug(f"pair: frames {f1}-{f2}")
 
         cache = {}  # descriptors and matches of this pair, shared by the methods
         for method in cfg["methods"]:
+            progress.set_postfix_str(f"running {method['name']}")
             counts, epi = run_method(method, frames[f1], frames[f2], depth1, depth2,
                                      poses[f1], poses[f2], K, correct_px, cache)
             rows.append({"frame1": f1, "frame2": f2, "method": method["name"], **counts})
