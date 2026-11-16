@@ -153,7 +153,7 @@ methods:
   descriptor → matcher → filter → grading, and where WP1–WP3 plug in.
 - [x] **`cache_depth_pictures.py`**: run once per dataset to save all depth maps to `data/`,
   so research runs don't repeat the Depth Anything 3 inference.
-- [ ] **Cache descriptors across methods** in `evaluation_pipeline.py`. Methods with the same
+- [x] **Cache descriptors across methods** in `evaluation_pipeline.py`. Methods with the same
   descriptor config currently recompute it on every image (e.g. RootSIFT four times per image
   in the default config). Compute each one once per image and reuse it. Keep the timing fair:
   count the descriptor time once for every method that uses it.

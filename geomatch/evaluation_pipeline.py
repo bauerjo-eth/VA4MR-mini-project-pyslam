@@ -19,6 +19,7 @@ Results are saved to geomatch/results/<name>_<timestamp>/:
 
 import argparse
 import csv
+import json
 import logging
 import shutil
 import time
@@ -89,29 +90,47 @@ def split_type(block):
     return params.pop("type"), params
 
 
+def cached(cache, key, compute):
+    """Return (result, seconds it took to compute). The first call with a key runs compute()
+    and stores the result; later calls with the same key reuse it and report the same time."""
+    if key not in cache:
+        t0 = time.perf_counter()
+        result = compute()
+        cache[key] = (result, time.perf_counter() - t0)
+    return cache[key]
+
+
 # ---------- one method on one pair ----------
 
-def run_method(method, img1, img2, depth1, depth2, T1, T2, K, correct_px):
+def run_method(method, img1, img2, depth1, depth2, T1, T2, K, correct_px, cache):
     """Describe, match, filter and grade. Returns the counts for this pair and the
-    epipolar errors of the kept matches."""
-    t0 = time.perf_counter()
+    epipolar errors of the kept matches.
+
+    `cache` holds the descriptors and matches of the current pair: methods with the same
+    descriptor config (and matcher config) reuse them instead of recomputing."""
+    d_key = json.dumps(method["descriptor"], sort_keys=True)
+    m_key = d_key + json.dumps(method["matcher"], sort_keys=True)
 
     d_type, d_params = split_type(method["descriptor"])
-    pts1, des1 = compute_descriptors(d_type, img1, depth1, **d_params)
-    pts2, des2 = compute_descriptors(d_type, img2, depth2, **d_params)
+    (pts1, des1, pts2, des2), t_describe = cached(cache, d_key, lambda: (
+        *compute_descriptors(d_type, img1, depth1, **d_params),
+        *compute_descriptors(d_type, img2, depth2, **d_params)))
 
     m_type, m_params = split_type(method["matcher"])
-    i1, i2 = match_descriptors(m_type, des1, des2, **m_params)
-    i1, i2 = np.asarray(i1, dtype=int), np.asarray(i2, dtype=int)
+    (i1, i2), t_match = cached(cache, m_key, lambda: tuple(
+        np.asarray(i, dtype=int) for i in match_descriptors(m_type, des1, des2, **m_params)))
 
+    t0 = time.perf_counter()
     f_type, f_params = split_type(method["filter"])
     z1, z2 = depth_at(depth1, pts1), depth_at(depth2, pts2)
     ctx = MatchContext(i1=i1, i2=i2, pts1=pts1, pts2=pts2, des1=des1, des2=des2,
                        depth1=depth1, depth2=depth2, z1=z1, z2=z2, K=K,
                        T1=T1, T2=T2)  # T1/T2 may only be used by the reference filter gt_epipolar
     keep = filter_matches(ctx, method=f_type, **f_params)
+    t_filter = time.perf_counter() - t0
 
-    time_ms = 1000 * (time.perf_counter() - t0)
+    # fair timing: shared work counts fully for every method that uses it
+    time_ms = 1000 * (t_describe + t_match + t_filter)
 
     # grading (not timed): compare the kept matches with the true camera motion
     k1, k2 = i1[keep], i2[keep]
@@ -180,9 +199,10 @@ def main():
         depth1, depth2 = load_depth(depth_dir, f1), load_depth(depth_dir, f2)
         log.info(f"pair {n}/{len(pairs)}: frames {f1}-{f2}")
 
+        cache = {}  # descriptors and matches of this pair, shared by the methods
         for method in cfg["methods"]:
             counts, epi = run_method(method, frames[f1], frames[f2], depth1, depth2,
-                                     poses[f1], poses[f2], K, correct_px)
+                                     poses[f1], poses[f2], K, correct_px, cache)
             rows.append({"frame1": f1, "frame2": f2, "method": method["name"], **counts})
             epi_errors[method["name"]].append(epi)
 
