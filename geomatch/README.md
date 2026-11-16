@@ -63,6 +63,7 @@ for Robust Visual SLAM*.
 | `evaluation_pipeline.py` | runs a config, saves the results |
 | `evaluation_config.yaml` | default config: dataset, grading threshold, methods to compare |
 | `depth.py` | DA3 depth prediction |
+| `cache_depth_pictures.py` | saves each depth map once to `data/depth/<model>/<dataset>/` and reuses it |
 | `demo.py` | the original evaluation script (kept unchanged) |
 | `core.py` | only re-imports the moved functions so `demo.py` keeps working |
 | `requirements.txt` | Python environment (setup instructions at the top) |
@@ -86,6 +87,10 @@ Each run creates `results/<name>_<timestamp>/` with:
 | `summary.csv` | one row per method: matches, share correct, median error, time per pair |
 | `per_pair.csv` | the same numbers for every image pair |
 | `log.txt` | everything printed during the run |
+
+Depth maps are cached: the first run of a dataset predicts and saves them to
+`data/depth/<model>/<dataset>/`, and later runs load them. If the depth prediction code
+changes, delete that folder.
 
 The original demo still works: `python -m geomatch.demo` (add `--show` to plot one pair).
 
@@ -146,5 +151,9 @@ methods:
   so the difficulty is controlled.
 - [ ] **Flowchart in this README** explaining the approach: images → depth and keypoints →
   descriptor → matcher → filter → grading, and where WP1–WP3 plug in.
-- [ ] **`cache_depth_pictures.py`**: run once per dataset to save all depth maps to `data/`,
+- [x] **`cache_depth_pictures.py`**: run once per dataset to save all depth maps to `data/`,
   so research runs don't repeat the Depth Anything 3 inference.
+- [ ] **Cache descriptors across methods** in `evaluation_pipeline.py`. Methods with the same
+  descriptor config currently recompute it on every image (e.g. RootSIFT four times per image
+  in the default config). Compute each one once per image and reuse it. Keep the timing fair:
+  count the descriptor time once for every method that uses it.

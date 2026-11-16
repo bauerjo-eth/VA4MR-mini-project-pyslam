@@ -29,7 +29,7 @@ import cv2
 import numpy as np
 import yaml
 
-from geomatch.depth import predict_depth
+from geomatch.cache_depth_pictures import cache_depth_maps, load_depth
 from geomatch.descriptors import compute_descriptors, depth_at
 from geomatch.evaluation_metrics import epipolar_error, reprojection_error
 from geomatch.filtering import MatchContext, filter_matches
@@ -173,13 +173,12 @@ def main():
     pairs, frames, poses, K = load_dataset(cfg["dataset"])
     correct_px = cfg["grading"]["correct_px"]
     log.info(f"{cfg['name']}: {len(pairs)} pairs x {len(cfg['methods'])} methods -> {out_dir}")
+    depth_dir = cache_depth_maps(frames, cfg["depth"]["model"], cfg["dataset"]["name"])
 
     rows, epi_errors = [], {m["name"]: [] for m in cfg["methods"]}
     for n, (f1, f2) in enumerate(pairs, 1):
-        t0 = time.perf_counter()
-        depth1 = predict_depth(frames[f1], cfg["depth"]["model"])
-        depth2 = predict_depth(frames[f2], cfg["depth"]["model"])
-        log.info(f"pair {n}/{len(pairs)}: frames {f1}-{f2} (depth {time.perf_counter() - t0:.1f} s)")
+        depth1, depth2 = load_depth(depth_dir, f1), load_depth(depth_dir, f2)
+        log.info(f"pair {n}/{len(pairs)}: frames {f1}-{f2}")
 
         for method in cfg["methods"]:
             counts, epi = run_method(method, frames[f1], frames[f2], depth1, depth2,
