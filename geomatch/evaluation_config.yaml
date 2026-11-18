@@ -17,9 +17,9 @@ dataset:
   intrinsics: {fx: 707.0912, fy: 707.0912, cx: 601.8873, cy: 183.1104}   # settings/KITTI04-12.yaml
   pairs:                     # image pairs (s, s + gap) for s = start, start + step, ... < stop
     start: 6                # frames 0-5 have a slightly wrong ground-truth rotation
-    stop: 1050
-    step: 1
-    gap: 10                  # frames between the two images (bigger = harder)
+    stop: 1000
+    step: 10
+    gap: 80                  # frames between the two images (bigger = harder)
 
 # ---------- depth prediction ----------
 depth:

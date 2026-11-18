@@ -191,6 +191,10 @@ methods:
   threshold changes the ranking of methods. Decide on a value with a larger sweep, or report
   results at two thresholds. Becomes more important once methods with different keypoints
   (SuperPoint, ORB) are compared.
+- [ ] **Add the TUM RGB-D dataset.** Indoor scenes with a handheld camera, so larger viewpoint
+  changes than KITTI, plus ground-truth depth from the depth sensor. Needed to evaluate Depth
+  Anything 3's depth (WP1) and as a harder second benchmark. Requires a second dataset loader
+  in the pipeline (image folders + timestamped poses instead of a video + KITTI poses).
 - [x] **Cache descriptors across methods** in `evaluation_pipeline.py`. Methods with the same
   descriptor config currently recompute it on every image (e.g. RootSIFT four times per image
   in the default config). Compute each one once per image and reuse it. Keep the timing fair:
