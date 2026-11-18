@@ -1,0 +1,44 @@
+# WP1 depth + patch geometry baselines: TUM RGB-D fr1/desk (Kinect depth + mocap poses = GT)
+# format: pySLAM config.yaml (DATASET sections) + DEPTH_BASELINE section
+# data (repo root, ~350 MB; scripts/download_tum.sh also gets fr2/xyz + fr3/long_office):
+#   mkdir -p datasets/tum && cd datasets/tum
+#   curl -O https://cvg.cit.tum.de/rgbd/dataset/freiburg1/rgbd_dataset_freiburg1_desk.tgz
+#   tar -xzf rgbd_dataset_freiburg1_desk.tgz && cd ../..
+#   python scripts/associate.py datasets/tum/rgbd_dataset_freiburg1_desk/rgb.txt \
+#     datasets/tum/rgbd_dataset_freiburg1_desk/depth.txt > datasets/tum/rgbd_dataset_freiburg1_desk/associations.txt
+# run (repo root): python baselines/depth_baseline.py baselines/configs/depth_tum_fr1_desk.yaml
+
+DATASET:
+  type: TUM_DATASET
+
+TUM_DATASET:
+  type: tum
+  sensor_type: rgbd                    # rgbd -> pySLAM loads the GT depth
+  base_path: datasets/tum
+  name: rgbd_dataset_freiburg1_desk
+  settings: settings/TUM1.yaml         # fr1 intrinsics + distortion, DepthMapFactor 5000, nFeatures 1000
+  associations: associations.txt
+  groundtruth_file: auto
+
+# required by pySLAM Config, unused here
+SYSTEM_STATE:
+  load_state: False
+  folder_path: results/slam_state
+SAVE_TRAJECTORY:
+  save_trajectory: False
+GLOBAL_PARAMETERS:
+
+DEPTH_BASELINE:
+  models: [DA3METRIC-LARGE, DA3-LARGE-1.1, VGGT-OMEGA]  # depth_models.make_depth_model names (also DA3MONO-LARGE)
+                                         # DA3-LARGE-1.1: any-view (pair inference); original DA3-LARGE deprecated
+                                         # VGGT-OMEGA: gated on Hugging Face -> remove without access
+  keypoints: [ORB2, SUPERPOINT]        # FeatureTrackerConfigs names, detector only (LIGHTGLUE = SuperPoint keypoints)
+  gt_sample_radius_px: 0               # dense GT: nearest pixel (KITTI LiDAR: > 0)
+  frame_step: 10                       # evaluated frame every N frames
+  frame_gaps: [5, 10, 20]              # patch geometry pairs (i, i + gap); 30 fps -> 0.17 / 0.33 / 0.67 s
+  gt_depth_range_m: [0.1, 10.0]        # valid GT depth
+  normal_knn: [30, 100, 300]           # Open3D estimate_normals neighbours: 30 = Open3D default (main), rest = comparison
+  visibility_rel_tol: 0.05             # GT correspondence kept if its depth matches the GT depth in view 2 (occlusion)
+  reproj_threshold_px: 5.0             # reprojection with predicted depth counted as correct below
+  save_depth: False                    # True: predicted depth per frame -> <output>/depth/<model>/<frame>.npz (float16)
+  output_path: results/wp1_depth_tum_fr1_desk

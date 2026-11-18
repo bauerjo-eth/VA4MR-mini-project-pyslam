@@ -1,0 +1,48 @@
+# WP1 depth + patch geometry baselines: KITTI 06 (outdoor), GT depth = KITTI raw LiDAR
+# images: color video shipped with pySLAM (same as SLAM / matching baselines)
+# GT depth: raw drive 2011_09_30_drive_0020 (= odometry 06, frames 0..1100), velodyne + calib only (repo root):
+#   mkdir -p datasets/kitti_raw && cd datasets/kitti_raw
+#   curl -O https://s3.eu-central-1.amazonaws.com/avg-kitti/raw_data/2011_09_30_calib.zip && unzip 2011_09_30_calib.zip
+#   curl -O https://s3.eu-central-1.amazonaws.com/avg-kitti/raw_data/2011_09_30_drive_0020/2011_09_30_drive_0020_sync.zip
+#   unzip 2011_09_30_drive_0020_sync.zip "2011_09_30/2011_09_30_drive_0020_sync/velodyne_points/*"   # 4.5 GB zip -> ~2 GB
+# run (repo root): python baselines/depth_baseline.py baselines/configs/depth_kitti06_lidar.yaml
+
+DATASET:
+  type: VIDEO_DATASET
+
+VIDEO_DATASET:
+  type: video
+  sensor_type: mono
+  base_path: data/videos/kitti06
+  name: video_color.mp4
+  settings: settings/KITTI04-12.yaml   # intrinsics (= P_rect_02), nFeatures = 2000
+  groundtruth_file: groundtruth.txt
+  timestamps: times.txt
+  start_frame_id: 0
+
+# required by pySLAM Config, unused here
+SYSTEM_STATE:
+  load_state: False
+  folder_path: results/slam_state
+SAVE_TRAJECTORY:
+  save_trajectory: False
+GLOBAL_PARAMETERS:
+
+DEPTH_BASELINE:
+  models: [DA3METRIC-LARGE, DA3-LARGE-1.1, VGGT-OMEGA]  # VGGT-OMEGA: gated on Hugging Face -> remove without access
+                                         # VGGT-OMEGA sees only the middle 740 px -> all models evaluated there
+  keypoints: [ORB2, SUPERPOINT]
+  gt_depth:                              # instead of dataset depth
+    type: kitti_lidar
+    drive_path: datasets/kitti_raw/2011_09_30/2011_09_30_drive_0020_sync
+    calib_path: datasets/kitti_raw/2011_09_30
+    cam: 2                               # left color camera
+  gt_sample_radius_px: 2                 # sparse LiDAR: median of LiDAR depths in 5 x 5 px
+  frame_step: 10
+  frame_gaps: [1, 5, 10]                 # same as matching baseline; 10 fps -> ~1 / 5 / 10 m driven
+  gt_depth_range_m: [0.1, 80.0]          # 80 m cap as in the Eigen-split evaluation
+  normal_knn: [30, 100, 300]             # Open3D estimate_normals neighbours: 30 = Open3D default (main), rest = comparison
+  visibility_rel_tol: 0.05
+  reproj_threshold_px: 5.0
+  save_depth: False
+  output_path: results/wp1_depth_kitti06_lidar
