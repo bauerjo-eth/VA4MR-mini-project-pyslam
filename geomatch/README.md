@@ -42,13 +42,24 @@ for Robust Visual SLAM*.
   | `relative_depth_threshold` | drop matches whose depths differ too much between the two images |
   | `gt_epipolar` | **reference only:** uses the ground-truth pose to show the best possible filter |
 
-  Each filter can also be combined with RANSAC, run before or after it.
+  RANSAC is not a filter option anymore: the evaluation pipeline applies it to every method
+  (see below).
 
 ### 3. Evaluation pipeline (Jonas & Robin, WP1/WP4)
+Every method's matches go through the same chain:
+
+```
+descriptor → matcher → filter (optional, the WP3 part) → RANSAC (always) → grade
+```
+
 - A config file lists the **methods** to compare. Each method is a descriptor + a matcher + a
   filter, chosen by name.
-- `evaluation_pipeline.py` runs every method on every image pair, grades the matches, and
-  saves the results. Nothing in the code has to change to try a new combination.
+- **RANSAC is always applied and the same for everyone**, as in a SLAM front end: it fits the
+  camera motion (essential matrix) to the matches and keeps only the inliers. A filter is
+  therefore only useful if it improves the result *beyond* what RANSAC achieves alone.
+- `evaluation_pipeline.py` runs every method on every image pair, grades the final matches and
+  the estimated camera motion against the ground truth, and saves the results. Nothing in the
+  code has to change to try a new combination.
 - Descriptors, matchers and filters each live in their own file, together with a **registry**:
   a dictionary from name to function, which is how the config finds them.
 
@@ -84,9 +95,25 @@ Each run creates `results/<name>_<timestamp>/` with:
 | File | Content |
 |---|---|
 | `config.yaml` | exact copy of the config used |
-| `summary.csv` | one row per method: matches, share correct, median error, time per pair |
+| `summary.csv` | one row per method, totalled over all pairs (columns explained below) |
 | `per_pair.csv` | the same numbers for every image pair |
 | `log.txt` | everything printed during the run |
+
+Columns of `summary.csv`:
+
+| Column | Meaning |
+|---|---|
+| `putative` | matches proposed by the matcher |
+| `filter_kept` | matches left after the filter |
+| `filter_recall` | correct matches after the filter / correct putative matches: what the filter alone keeps (1.0 without a filter) |
+| `final` | matches left after RANSAC: what SLAM would get |
+| `correct`, `wrong` | final matches within / beyond `correct_px` of their epipolar line |
+| `precision_epi` | correct / final |
+| `recall` | correct final matches / correct putative matches: what filter + RANSAC keep together |
+| `precision_reproj` | like `precision_epi`, but the point is lifted to 3D with the predicted depth; fails if the match *or* the depth is wrong |
+| `median_epi_px` | typical distance of a final match to its epipolar line |
+| `auc@5deg` etc. | relative pose accuracy: the camera motion estimated by RANSAC is compared with the true motion; 1.0 = every pair recovered perfectly |
+| `time_ms_per_pair` | descriptors + matching + filter + RANSAC (not depth prediction) |
 
 Depth maps are cached: the first run of a dataset predicts and saves them to
 `data/depth/<model>/<dataset>/`, and later runs load them. If the depth prediction code
@@ -141,7 +168,7 @@ methods:
   - name: my_test
     descriptor: {type: my_descriptor, my_param: 2.0}
     matcher:    {type: my_matcher}
-    filter:     {type: my_filter, ransac: after}
+    filter:     {type: my_filter}         # RANSAC follows automatically
 ```
 
 ## To-do
@@ -153,13 +180,17 @@ methods:
   descriptor → matcher → filter → grading, and where WP1–WP3 plug in.
 - [x] **`cache_depth_pictures.py`**: run once per dataset to save all depth maps to `data/`,
   so research runs don't repeat the Depth Anything 3 inference.
-- [ ] **Recall in `summary.csv`.** Add `correct` (kept × precision), `wrong` and `recall`
+- [x] **Recall in `summary.csv`.** Add `correct` (kept × precision), `wrong` and `recall`
   (correct matches kept ÷ correct matches before filtering). Precision alone hides filters that
   also throw away good matches.
-- [ ] **Relative pose AUC.** For each pair, estimate the camera motion from the kept matches
+- [x] **Relative pose AUC.** For each pair, estimate the camera motion from the kept matches
   (essential matrix + RANSAC), compare its rotation and translation direction with the ground
   truth, and report AUC@5°/10°/20° (as in SuperGlue/LightGlue). This is the standard bridge
   between matching quality and SLAM quality.
+- [ ] **Tune the RANSAC threshold.** A sweep (0.5 / 1 / 2 / 4 px, 52 pairs) showed that the
+  threshold changes the ranking of methods. Decide on a value with a larger sweep, or report
+  results at two thresholds. Becomes more important once methods with different keypoints
+  (SuperPoint, ORB) are compared.
 - [x] **Cache descriptors across methods** in `evaluation_pipeline.py`. Methods with the same
   descriptor config currently recompute it on every image (e.g. RootSIFT four times per image
   in the default config). Compute each one once per image and reuse it. Keep the timing fair:

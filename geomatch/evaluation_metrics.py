@@ -110,3 +110,39 @@ def reprojection_error(p1, p2, z1, z2, T1, T2, K):
     predicted depth. Mixes matching errors with depth errors."""
     return 0.5 * (_reproject_one_way(p1, p2, z1, T1, T2, K)
                   + _reproject_one_way(p2, p1, z2, T2, T1, K))
+
+
+# ---------- relative pose: was the camera motion recovered correctly? ----------
+
+def _angle_deg(cos):
+    return np.degrees(np.arccos(np.clip(cos, -1.0, 1.0)))
+
+
+def relative_pose_error(R, t, T1, T2):
+    """Compare an estimated camera motion (R, t from the RANSAC stage) with the true motion.
+    Returns (rotation error, translation direction error) in degrees. The translation length
+    cannot be recovered from two images, so only its direction is compared. A failed
+    estimate (R is None) counts as infinite error."""
+    if R is None:
+        return np.inf, np.inf
+    T21 = relative_pose(T1, T2)
+    R_true, t_true = T21[:3, :3], T21[:3, 3]
+    rot_err = _angle_deg((np.trace(R.T @ R_true) - 1) / 2)
+    trans_err = _angle_deg(t.ravel() @ t_true / (np.linalg.norm(t) * np.linalg.norm(t_true)))
+    return rot_err, trans_err
+
+
+def pose_auc(errors, thresholds_deg):
+    """Area under the curve "share of pairs with pose error below x" for x from 0 to each
+    threshold, divided by the threshold. 1.0 = every pair perfect, 0.0 = no pair below the
+    threshold. Pose error of a pair = max(rotation error, translation error)."""
+    errors = np.sort(np.asarray(errors, dtype=float))
+    share = np.arange(1, len(errors) + 1) / len(errors)  # share of pairs with error <= errors[i]
+    errors, share = np.r_[0.0, errors], np.r_[0.0, share]
+    aucs = []
+    for t in thresholds_deg:
+        n = np.searchsorted(errors, t)                   # points of the curve below t
+        x = np.r_[errors[:n], t]
+        y = np.r_[share[:n], share[n - 1]]
+        aucs.append(float(np.trapz(y, x) / t))
+    return aucs
