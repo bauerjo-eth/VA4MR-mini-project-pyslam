@@ -25,28 +25,28 @@ dataset:
 depth:
   model: depth-anything/DA3METRIC-LARGE
 
+# ---------- RANSAC (always applied to every method's matches, after its filter) ----------
+ransac:
+  threshold_px: 1.0          # max epipolar distance of an inlier (pixels); 1 px as in SuperGlue
+  confidence: 0.99           # probability that RANSAC tries at least one outlier-free sample
+
 # ---------- grading ----------
 grading:
   correct_px: 4.0            # a match is correct if its error is below this (pixels)
+  pose_auc_deg: [5, 10, 20]  # relative pose AUC up to these angles (degrees)
 
 # ---------- methods to compare ----------
-# Every method runs on every pair. Each one is a descriptor, a matcher and a filter.
+# Every method runs on every pair:  descriptor -> matcher -> filter -> RANSAC (always) -> grade
 # `type` picks the method by its registry name; all other keys are passed to it as parameters.
 #   descriptor types: see descriptors.py   (rootsift, rootsift_depth)
 #   matcher types:    see matchers.py      (nn_ratio)
 #   filter types:     see filtering.py     (none, depth_valid, desc_threshold,
 #                                           relative_depth_threshold, gt_epipolar)
-#   every filter also takes  ransac: none | before | after
 methods:
   - name: sift                                   # appearance-only baseline
     descriptor: {type: rootsift}
     matcher:    {type: nn_ratio, ratio: 0.8}
     filter:     {type: none}
-
-  - name: sift_ransac                            # classic outlier rejection
-    descriptor: {type: rootsift}
-    matcher:    {type: nn_ratio, ratio: 0.8}
-    filter:     {type: none, ransac: after}
 
   - name: sift_depth_w0.3                        # WP2: depth-aware descriptor
     descriptor: {type: rootsift_depth, w: 0.3}
@@ -58,10 +58,10 @@ methods:
     matcher:    {type: nn_ratio, ratio: 0.8}
     filter:     {type: relative_depth_threshold, rel_depth_thresh: 0.2}
 
-  - name: sift_depth_w0.3_reldepth0.2_ransac     # WP2 + WP3 + RANSAC combined
+  - name: sift_depth_w0.3_reldepth0.2            # WP2 + WP3 combined
     descriptor: {type: rootsift_depth, w: 0.3}
     matcher:    {type: nn_ratio, ratio: 0.8}
-    filter:     {type: relative_depth_threshold, rel_depth_thresh: 0.2, ransac: after}
+    filter:     {type: relative_depth_threshold, rel_depth_thresh: 0.2}
 
   - name: sift_oracle                            # REFERENCE ONLY: uses the ground truth
     descriptor: {type: rootsift}

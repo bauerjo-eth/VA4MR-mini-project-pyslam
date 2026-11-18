@@ -5,10 +5,13 @@ Run from the repository root:
     python -m geomatch.evaluation_pipeline                              # evaluation_config.yaml
     python -m geomatch.evaluation_pipeline --config path/to/other.yaml
 
-For every image pair, and every method (descriptor + matcher + filter) in the config:
-  1. compute descriptors in both images and match them
-  2. filter the matches
-  3. grade the kept matches against the ground-truth camera motion
+For every image pair, and every method in the config, the matches go through
+
+    descriptor -> matcher -> filter (optional, the WP3 part) -> RANSAC (always) -> grade
+
+RANSAC is the same for every method, as in a SLAM front end: it fits the camera motion
+(essential matrix) to the matches and keeps only the inliers. Grading compares the final
+matches and the estimated camera motion with the ground truth.
 
 Results are saved to geomatch/results/<name>_<timestamp>/:
   config.yaml    exact copy of the config used
@@ -33,7 +36,8 @@ from tqdm import tqdm
 
 from geomatch.cache_depth_pictures import cache_depth_maps, load_depth
 from geomatch.descriptors import compute_descriptors, depth_at
-from geomatch.evaluation_metrics import epipolar_error, reprojection_error
+from geomatch.evaluation_metrics import (epipolar_error, pose_auc, relative_pose_error,
+                                         reprojection_error)
 from geomatch.filtering import MatchContext, filter_matches
 from geomatch.matchers import match_descriptors
 
@@ -113,11 +117,33 @@ def cached(cache, key, compute):
     return cache[key]
 
 
+# ---------- RANSAC stage (same for every method) ----------
+
+def ransac_relative_pose(p1, p2, K, threshold_px=1.0, confidence=0.99999):
+    """Fit an essential matrix to the matches with RANSAC, keep its inliers, and recover the
+    camera motion. Returns R, t (None if it failed) and a boolean inlier mask over the matches.
+    Inliers must also lie in front of both cameras."""
+    inliers = np.zeros(len(p1), dtype=bool)
+    if len(p1) < 5:  # an essential matrix needs at least 5 matches
+        return None, None, inliers
+    cv2.setRNGSeed(0)  # same result regardless of what ran before
+    E, mask = cv2.findEssentialMat(p1, p2, K, method=cv2.RANSAC, prob=confidence, threshold=threshold_px)
+    if E is None:
+        return None, None, inliers
+
+    best_n, best_R, best_t = 0, None, None
+    for E_i in np.split(E, len(E) // 3):  # RANSAC can return up to 3 candidate solutions
+        n, R, t, mask_i = cv2.recoverPose(E_i, p1, p2, K, mask=mask.copy())
+        if n > best_n:
+            best_n, best_R, best_t, inliers = n, R, t, mask_i.ravel() > 0
+    return best_R, best_t, inliers
+
+
 # ---------- one method on one pair ----------
 
-def run_method(method, img1, img2, depth1, depth2, T1, T2, K, correct_px, cache):
-    """Describe, match, filter and grade. Returns the counts for this pair and the
-    epipolar errors of the kept matches.
+def run_method(method, img1, img2, depth1, depth2, T1, T2, K, ransac_cfg, correct_px, cache):
+    """descriptor -> matcher -> filter -> RANSAC, then grade. Returns the counts for this pair
+    and the epipolar errors of the final matches.
 
     `cache` holds the descriptors and matches of the current pair: methods with the same
     descriptor config (and matcher config) reuse them instead of recomputing."""
@@ -135,43 +161,71 @@ def run_method(method, img1, img2, depth1, depth2, T1, T2, K, correct_px, cache)
 
     t0 = time.perf_counter()
     f_type, f_params = split_type(method["filter"])
+    if "ransac" in f_params:
+        raise ValueError(f"method '{method['name']}': RANSAC is always applied by the pipeline, "
+                         "remove 'ransac' from its filter config")
     z1, z2 = depth_at(depth1, pts1), depth_at(depth2, pts2)
     ctx = MatchContext(i1=i1, i2=i2, pts1=pts1, pts2=pts2, des1=des1, des2=des2,
                        depth1=depth1, depth2=depth2, z1=z1, z2=z2, K=K,
                        T1=T1, T2=T2)  # T1/T2 may only be used by the reference filter gt_epipolar
     keep = filter_matches(ctx, method=f_type, **f_params)
-    t_filter = time.perf_counter() - t0
+    k1, k2 = i1[keep], i2[keep]                     # matches after the filter
+
+    R, t, inliers = ransac_relative_pose(pts1[k1], pts2[k2], K, **ransac_cfg)
+    r1, r2 = k1[inliers], k2[inliers]               # final matches, after RANSAC
+    t_filter_ransac = time.perf_counter() - t0
 
     # fair timing: shared work counts fully for every method that uses it
-    time_ms = 1000 * (t_describe + t_match + t_filter)
+    time_ms = 1000 * (t_describe + t_match + t_filter_ransac)
 
-    # grading (not timed): compare the kept matches with the true camera motion
-    k1, k2 = i1[keep], i2[keep]
-    epi = epipolar_error(pts1[k1], pts2[k2], T1, T2, K)
-    rep = reprojection_error(pts1[k1], pts2[k2], z1[k1], z2[k2], T1, T2, K)
-    counts = dict(putative=len(i1), kept=len(k1),
-                  correct_epi=int((epi < correct_px).sum()),
+    # grading (not timed): compare the matches and the camera motion with the ground truth
+    epi_all = epipolar_error(pts1[i1], pts2[i2], T1, T2, K)  # every putative match
+    epi_filter = epi_all[keep]                                # after the filter
+    epi = epi_filter[inliers]                                 # final
+    rep = reprojection_error(pts1[r1], pts2[r2], z1[r1], z2[r2], T1, T2, K)
+    rot_err, trans_err = relative_pose_error(R, t, T1, T2)
+    counts = dict(putative=len(i1), kept_by_filter=len(k1), final=len(r1),
+                  correct_putative=int((epi_all < correct_px).sum()),
+                  correct_filter=int((epi_filter < correct_px).sum()),
+                  correct_final=int((epi < correct_px).sum()),
                   correct_reproj=int((rep < correct_px).sum()),
+                  rot_err_deg=round(float(rot_err), 3),
+                  trans_err_deg=round(float(trans_err), 3),
                   time_ms=round(time_ms, 1))
     return counts, epi
 
 
 # ---------- results ----------
 
-def summarize(rows, epi_errors):
-    """One row per method: totals over all pairs, precision and median epipolar error."""
+def summarize(rows, epi_errors, auc_thresholds):
+    """One row per method, totalled over all pairs: match counts, precision, recall, median
+    epipolar error, relative pose AUC and time. Unless named 'filter_...', columns describe
+    the final matches (after RANSAC)."""
+    def ratio(a, b):
+        return round(a / b, 4) if b else 0.0
+
     summary = []
     for name, errors in epi_errors.items():
         r = [row for row in rows if row["method"] == name]
-        kept = sum(x["kept"] for x in r)
+        final = sum(x["final"] for x in r)
+        correct = sum(x["correct_final"] for x in r)
+        correct_putative = sum(x["correct_putative"] for x in r)
         e = np.concatenate(errors)
+        pose_errors = [max(x["rot_err_deg"], x["trans_err_deg"]) for x in r]
+        aucs = pose_auc(pose_errors, auc_thresholds)
         summary.append({
             "method": name,
             "putative": sum(x["putative"] for x in r),
-            "kept": kept,
-            "precision_epi": round(sum(x["correct_epi"] for x in r) / kept, 4) if kept else 0.0,
-            "precision_reproj": round(sum(x["correct_reproj"] for x in r) / kept, 4) if kept else 0.0,
+            "filter_kept": sum(x["kept_by_filter"] for x in r),
+            "filter_recall": ratio(sum(x["correct_filter"] for x in r), correct_putative),
+            "final": final,
+            "correct": correct,
+            "wrong": final - correct,
+            "precision_epi": ratio(correct, final),
+            "recall": ratio(correct, correct_putative),
+            "precision_reproj": ratio(sum(x["correct_reproj"] for x in r), final),
             "median_epi_px": round(float(np.median(e)), 3) if len(e) else float("nan"),
+            **{f"auc@{t}deg": round(a, 4) for t, a in zip(auc_thresholds, aucs)},
             "time_ms_per_pair": round(float(np.mean([x["time_ms"] for x in r])), 1),
         })
     return summary
@@ -203,12 +257,12 @@ def main():
         cfg = yaml.safe_load(f)
     out_dir = setup_output(cfg, args.config)
     pairs, frames, poses, K = load_dataset(cfg["dataset"])
-    correct_px = cfg["grading"]["correct_px"]
+    grading = cfg["grading"]
     log.info(f"Running evaluation pipeline: {cfg['name']} ({len(pairs)} image pairs x {len(cfg['methods'])} methods)")
     log.info(f"Results: {out_dir}")
     depth_dir = cache_depth_maps(frames, cfg["depth"]["model"], cfg["dataset"]["name"])
 
-    log.info("Methods (descriptor + matcher + filter):")
+    log.info("Methods (descriptor + matcher + filter, then RANSAC for all):")
     for method in cfg["methods"]:
         log.info(f"  {method['name']}: {describe(method)}")
 
@@ -222,15 +276,18 @@ def main():
         for method in cfg["methods"]:
             progress.set_postfix_str(f"running {method['name']}")
             counts, epi = run_method(method, frames[f1], frames[f2], depth1, depth2,
-                                     poses[f1], poses[f2], K, correct_px, cache)
+                                     poses[f1], poses[f2], K, cfg["ransac"], grading["correct_px"], cache)
             rows.append({"frame1": f1, "frame2": f2, "method": method["name"], **counts})
             epi_errors[method["name"]].append(epi)
 
-    summary = summarize(rows, epi_errors)
+    summary = summarize(rows, epi_errors, grading["pose_auc_deg"])
     write_csv(out_dir / "per_pair.csv", rows)
     write_csv(out_dir / "summary.csv", summary)
-    log.info(f"\nSUMMARY (a match is correct if its error < {correct_px} px)")
+    log.info(f"\nSUMMARY (a match is correct if its epipolar error < {grading['correct_px']} px; "
+             "columns describe the final matches after RANSAC unless named filter_...)")
     log_table(summary)
+    log.info("recall = correct final matches / correct matches before filter and RANSAC | "
+             "auc@Xdeg = relative pose accuracy (1.0 = every pair's camera motion recovered perfectly)")
     log.info(f"\nsaved to {out_dir}")
 
 
