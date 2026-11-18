@@ -38,7 +38,7 @@ grading:
 # ---------- methods to compare ----------
 # Every method runs on every pair:  descriptor -> matcher -> filter -> RANSAC (always) -> grade
 # `type` picks the method by its registry name; all other keys are passed to it as parameters.
-#   descriptor types: see descriptors.py   (rootsift, rootsift_depth)
+#   descriptor types: see descriptors.py   (rootsift, rootsift_depth, depthsift, rootsift_depthsift)
 #   matcher types:    see matchers.py      (nn_ratio)
 #   filter types:     see filtering.py     (none, depth_valid, desc_threshold,
 #                                           relative_depth_threshold, gt_epipolar)
@@ -62,6 +62,36 @@ methods:
     descriptor: {type: rootsift_depth, w: 0.3}
     matcher:    {type: nn_ratio, ratio: 0.8}
     filter:     {type: relative_depth_threshold, rel_depth_thresh: 0.2}
+
+  - name: depthsift_log                          # WP2: SIFT on the log-depth image only
+    descriptor: {type: depthsift, transform: log}
+    matcher:    {type: nn_ratio, ratio: 0.8}
+    filter:     {type: none}
+
+  - name: sift_depthsift_log_w0.3                # WP2: image SIFT + depth SIFT
+    descriptor: {type: rootsift_depthsift, w: 0.3, transform: log}
+    matcher:    {type: nn_ratio, ratio: 0.8}
+    filter:     {type: none}
+
+  - name: sift_depthsift_log_w0.1                # WP2: image SIFT + depth SIFT
+    descriptor: {type: rootsift_depthsift, w: 0.1, transform: log}
+    matcher:    {type: nn_ratio, ratio: 0.8}
+    filter:     {type: none}
+
+  - name: sift_depthsift_log_w0.6
+    descriptor: {type: rootsift_depthsift, w: 0.6, transform: log}
+    matcher:    {type: nn_ratio, ratio: 0.8}
+    filter:     {type: none}
+
+  - name: sift_depthsift_log_w1.0                # depth counts as much as appearance
+    descriptor: {type: rootsift_depthsift, w: 1.0, transform: log}
+    matcher:    {type: nn_ratio, ratio: 0.8}
+    filter:     {type: none}
+
+  - name: sift_depthsift_inv_w0.6                # inverse depth instead of log depth
+    descriptor: {type: rootsift_depthsift, w: 0.6, transform: inverse, z_min: 3.0}   # KITTI: nothing closer than ~4.5 m
+    matcher:    {type: nn_ratio, ratio: 0.8}
+    filter:     {type: none}
 
   - name: sift_oracle                            # REFERENCE ONLY: uses the ground truth
     descriptor: {type: rootsift}

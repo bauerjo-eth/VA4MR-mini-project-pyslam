@@ -67,7 +67,7 @@ descriptor → matcher → filter (optional, the WP3 part) → RANSAC (always) �
 
 | File | Content |
 |---|---|
-| `descriptors.py` | descriptor algorithms (RootSIFT, depth descriptor) and their registry |
+| `descriptors.py` | descriptor algorithms (RootSIFT, depth descriptor, SIFT on the depth image) and their registry |
 | `matchers.py` | matcher algorithms (ratio test) and their registry |
 | `filtering.py` | filter algorithms and their registry |
 | `evaluation_metrics.py` | grading: error of each match w.r.t. the true camera motion |
