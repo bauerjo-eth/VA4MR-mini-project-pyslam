@@ -1,0 +1,41 @@
+# WP1 matching baselines: TUM RGB-D fr1/desk (indoor, Kinect depth + mocap poses = GT)
+# format: pySLAM config.yaml (DATASET sections) + MATCHING_BASELINE section
+# data (~350 MB): see depth_tum_fr1_desk.yaml
+# run (repo root): python baselines/matching_baseline.py baselines/configs/matching_tum_fr1_desk.yaml
+
+DATASET:
+  type: TUM_DATASET
+
+TUM_DATASET:
+  type: tum
+  sensor_type: rgbd                    # rgbd -> pySLAM loads the Kinect depth (depth check)
+  base_path: datasets/tum
+  name: rgbd_dataset_freiburg1_desk
+  settings: settings/TUM1.yaml         # fr1 intrinsics + distortion, nFeatures 1000 (all matchers)
+  associations: associations.txt
+  groundtruth_file: auto
+
+# required by pySLAM Config, unused here
+SYSTEM_STATE:
+  load_state: False
+  folder_path: results/slam_state
+SAVE_TRAJECTORY:
+  save_trajectory: False
+GLOBAL_PARAMETERS:
+
+MATCHING_BASELINE:
+  matchers: [ORB2, SUPERPOINT, LIGHTGLUE, LIGHTGLUE_FULL]   # same as KITTI
+  frame_gaps: [5, 10, 20]              # as depth baseline; 30 fps -> 0.17 / 0.33 / 0.67 s
+  frame_step: 10
+  epipolar_threshold_px: 5.0           # same as KITTI
+  ransac_threshold_px: 1.0
+  auc_thresholds_deg: [5, 10, 20]
+  depth_check:                         # 2nd check: GT depth + GT pose -> the true point, not only the line
+    gt_depth:
+      type: dataset                    # Kinect depth of the dataset (dense)
+    gt_sample_radius_px: 0             # dense GT: nearest pixel
+    gt_depth_range_m: [0.1, 10.0]
+    visibility_rel_tol: 0.05           # GT point used only if the GT depth in image 2 agrees (else occluded)
+    threshold_px: 10.0                 # correct: on the epipolar line and within this distance of the GT point
+                                       # GT noise (pose, Kinect depth, 20 ms RGB-depth offset): median 3-4 px
+  output_path: results/wp1_matching_tum_fr1_desk

@@ -1,6 +1,7 @@
 # WP1 matching baselines: KITTI 06, color video shipped with pySLAM
 # format: pySLAM config.yaml (DATASET sections) + MATCHING_BASELINE section
 # run (repo root): python baselines/matching_baseline.py baselines/configs/matching_kitti06_video.yaml
+# depth check needs the KITTI raw LiDAR (see depth_kitti06_lidar.yaml)
 
 DATASET:
   type: VIDEO_DATASET
@@ -32,4 +33,15 @@ MATCHING_BASELINE:
                                             # KITTI GT noise: RANSAC inliers ~1.2 px from GT line at gap 10 -> 2 px too strict
   ransac_threshold_px: 1.0                  # essential matrix RANSAC
   auc_thresholds_deg: [5, 10, 20]           # pose AUC, error = max(rotation, translation direction)
+  depth_check:                              # 2nd check: GT depth + GT pose -> the true point, not only the line
+    gt_depth:                               # KITTI raw LiDAR (download: depth_kitti06_lidar.yaml); without it: remove
+      type: kitti_lidar                     #   depth_check (epipolar check only)
+      drive_path: datasets/kitti_raw/2011_09_30/2011_09_30_drive_0020_sync
+      calib_path: datasets/kitti_raw/2011_09_30
+      cam: 2                                # left color camera
+    gt_sample_radius_px: 2                  # sparse LiDAR: median of LiDAR depths in 5 x 5 px (as depth baseline)
+    gt_depth_range_m: [0.1, 80.0]
+    visibility_rel_tol: 0.05                # GT point used only if the GT depth in image 2 agrees (else occluded)
+    threshold_px: 10.0                      # correct: on the epipolar line and within this distance of the GT point
+                                            # GT noise (pose + depth): median 1-4.5 px from the GT point -> 10 px
   output_path: results/wp1_matching_kitti06

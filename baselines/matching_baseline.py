@@ -5,6 +5,14 @@ pySLAM parts (nothing re-implemented):
 - matchers: feature_tracker_factory + FeatureTrackerConfigs (= SLAM presets)
 - geometry: computeF12_numba, estimate_pose_ess_mat, so3_log_angle, xyzq2Tmat, inv_T
 New here: pair loop, epipolar distances, translation-direction error, pose AUC, tables.
+Match correctness, two checks:
+- epipolar (always): GT pose -> epipolar line, match within epipolar_threshold_px of it (both images).
+  Blind along the line: a wrong match on the line (e.g. the next of several identical poles along the road) passes
+  -> precision is an upper bound
+- depth (optional, MATCHING_BASELINE.depth_check): GT depth + GT pose -> the true point in image 2 (gt_depth.py,
+  same GT correspondences as the depth baseline); correct = on the line and within threshold_px of the true point.
+  Only matches with GT depth (KITTI LiDAR: a part, TUM Kinect: most); both precisions on that same subset
+  -> difference = wrong matches on the epipolar line
 LIGHTGLUE_FULL: pySLAM's LIGHTGLUE preset with all 9 LightGlue layers (pySLAM builds it with 2).
 Timing: median per pair; the first pair of each matcher runs once untimed (GPU / library warm-up).
 info.txt records platform, GPU and the device of each network (pySLAM: CUDA if available, else CPU).
@@ -12,6 +20,7 @@ info.txt records platform, GPU and the device of each network (pySLAM: CUDA if a
 Usage (repo root, pySLAM env active):
     python baselines/matching_baseline.py baselines/configs/matching_kitti06_video.yaml
     python baselines/matching_baseline.py baselines/configs/matching_kitti06_video.yaml --matchers ORB2 LIGHTGLUE
+    python baselines/matching_baseline.py baselines/configs/matching_tum_fr1_desk.yaml
 """
 
 import argparse
@@ -35,6 +44,9 @@ from pyslam.slam import camera_from_config
 from pyslam.utilities.geom_2views import computeF12_numba, estimate_pose_ess_mat
 from pyslam.utilities.geom_lie import so3_log_angle
 from pyslam.utilities.geometry import add_ones, inv_T, xyzq2Tmat
+
+from gt_depth import gt_depth_source, gt_reproject
+from patch_geometry import pixel_rays
 
 MIN_GT_TRANSLATION_M = 0.01  # pairs without motion: translation direction undefined -> skipped
 FULL_SUFFIX = "_FULL"  # e.g. LIGHTGLUE_FULL: LightGlue preset with all layers
@@ -105,7 +117,9 @@ def pose_auc(errors, thresholds):
     return aucs
 
 
-def evaluate_pair(tracker, camera, img_ref, img_cur, T_w_ref, T_w_cur, params):
+def evaluate_pair(tracker, camera, ref, cur, params, rays=None):
+    """ref / cur: {'img', 'T_w_c', 'gt' (GT depth, only with depth_check)}; rays: pixel_rays (depth_check only)."""
+    img_ref, img_cur, T_w_ref, T_w_cur = ref["img"], cur["img"], ref["T_w_c"], cur["T_w_c"]
     t0 = time.perf_counter()
     kps, des = tracker.detectAndCompute(img_ref)
     kps_ref = np.array([kp.pt for kp in kps], dtype=np.float32)
@@ -127,9 +141,29 @@ def evaluate_pair(tracker, camera, img_ref, img_cur, T_w_ref, T_w_cur, params):
     T_rc_gt = T_ref_w @ T_w_cur
 
     # match correctness
-    n_correct = 0
+    on_line = np.zeros(n_matches, dtype=bool)
     if n_matches > 0:
-        n_correct = int(np.sum(epipolar_distances(F12, u_ref, u_cur) < params["epipolar_threshold_px"]))
+        on_line = epipolar_distances(F12, u_ref, u_cur) < params["epipolar_threshold_px"]
+    n_correct = int(on_line.sum())
+
+    # 2nd check with GT depth: the true point, not only the line
+    depth = {}
+    if rays is not None:
+        dc = params["depth_check"]
+        has_gt = np.zeros(n_matches, dtype=bool)
+        err = np.full(n_matches, np.nan)
+        if n_matches > 0:
+            p_ref = np.asarray(res.kps_ref_matched, dtype=float).reshape(-1, 2)  # image pixels (as the projection)
+            p_cur = np.asarray(res.kps_cur_matched, dtype=float).reshape(-1, 2)
+            u_gt, has_gt, _, _ = gt_reproject(ref, cur, p_ref, rays, camera, dc)
+            err = np.linalg.norm(p_cur - u_gt, axis=1)
+        on_line_gt = has_gt & on_line
+        depth = {
+            "n_depth": int(has_gt.sum()),  # matches with a GT point
+            "n_depth_epi": int(on_line_gt.sum()),  # ... that pass the epipolar check
+            "n_depth_correct": int(np.sum(on_line_gt & (err < dc["threshold_px"]))),  # ... and are at the GT point
+            "depth_err_med_px": float(np.median(err[on_line_gt])) if on_line_gt.any() else np.nan,
+        }
 
     # relative pose from matches (essential matrix + RANSAC)
     rot_err = trans_err = np.inf
@@ -157,6 +191,7 @@ def evaluate_pair(tracker, camera, img_ref, img_cur, T_w_ref, T_w_cur, params):
         "trans_err_deg": trans_err,
         "pose_err_deg": max(rot_err, trans_err),
         "time_ms": 1000 * time_s,
+        **depth,
     }
 
 
@@ -179,6 +214,12 @@ def summarize(rows, matchers, gaps, auc_thresholds):
             }
             row.update({f"auc@{t}": a for t, a in zip(auc_thresholds, aucs)})
             row["time_ms"] = np.median([r["time_ms"] for r in sel])  # median: robust to throttling / spikes
+            if "n_depth" in sel[0]:  # pooled over the pairs (few matches with GT per pair on KITTI)
+                n_depth = sum(r["n_depth"] for r in sel)
+                row["depth_coverage"] = n_depth / max(sum(r["n_matches"] for r in sel), 1)
+                row["precision_epi_on_depth"] = sum(r["n_depth_epi"] for r in sel) / n_depth if n_depth else np.nan
+                row["precision_depth"] = sum(r["n_depth_correct"] for r in sel) / n_depth if n_depth else np.nan
+                row["depth_err_med_px"] = float(np.nanmedian([r["depth_err_med_px"] for r in sel]))
             summary.append(row)
     return summary
 
@@ -208,22 +249,33 @@ def main():
     camera = camera_from_config(config)
 
     trackers = {name: make_tracker(name, config.num_features_to_extract) for name in params["matchers"]}
+    depth_check = params.get("depth_check")
+    rays = gt_depth = None
+    if depth_check:
+        rays, gt_depth = pixel_rays(camera), gt_depth_source(depth_check, dataset, camera)
+        lo, hi = depth_check["gt_depth_range_m"]
+    needed = lambda i: i % step == 0 or any(i - g >= 0 and (i - g) % step == 0 for g in gaps)
 
     # single sequential pass (video datasets can't seek reliably), buffer of the last max(gap) frames
     rows, buffer, skipped, warmed_up, frame_id = [], {}, 0, set(), 0
     while (img := dataset.getImageColor(frame_id)) is not None:
-        buffer[frame_id] = img
+        frame = {"img": img, "T_w_c": gt_pose(groundtruth, frame_id)}
+        if depth_check and needed(frame_id):
+            gt = gt_depth(frame_id)
+            gt[~((gt >= lo) & (gt <= hi))] = np.nan
+            frame["gt"] = gt
+        buffer[frame_id] = frame
         buffer.pop(frame_id - max(gaps) - 1, None)
         for gap in gaps:
             ref_id = frame_id - gap
             if ref_id < 0 or ref_id % step != 0:
                 continue
-            T_w_ref, T_w_cur = gt_pose(groundtruth, ref_id), gt_pose(groundtruth, frame_id)
-            if np.linalg.norm(T_w_cur[:3, 3] - T_w_ref[:3, 3]) < MIN_GT_TRANSLATION_M:
+            ref = buffer[ref_id]
+            if np.linalg.norm(frame["T_w_c"][:3, 3] - ref["T_w_c"][:3, 3]) < MIN_GT_TRANSLATION_M:
                 skipped += 1
                 continue
             for name, tracker in trackers.items():
-                pair_args = (tracker, camera, buffer[ref_id], img, T_w_ref, T_w_cur, params)
+                pair_args = (tracker, camera, ref, frame, params, rays)
                 if name not in warmed_up:  # first call loads / compiles GPU kernels -> run once untimed
                     evaluate_pair(*pair_args)
                     warmed_up.add(name)
@@ -247,16 +299,20 @@ def main():
         f"opencv: {cv2.__version__}\ntorch: {torch.__version__}\nplatform: {platform.platform()}\n"
         f"cuda gpu: {gpu}\nnetworks on: {devices}\n"
         "time_ms: median per pair (detection in both images + matching), first pair per matcher untimed (warm-up)\n"
-        f"skipped pairs (no motion): {skipped}\n")
+        f"skipped pairs (no motion): {skipped}\n"
+        + (f"depth check: {depth_check}\n" if depth_check else "depth check: off\n"))
     print(f"networks on: {devices} (cuda gpu: {gpu})")
 
     w = max(len(m) for m in ["matcher", *params["matchers"]]) + 1
     print(f"\n{'matcher':<{w}}{'gap':>4}{'pairs':>6}{'matches':>9}{'correct':>9}{'prec':>7}"
-          + "".join(f"{'auc@' + str(t):>8}" for t in params["auc_thresholds_deg"]) + f"{'ms':>8}")
+          + "".join(f"{'auc@' + str(t):>8}" for t in params["auc_thresholds_deg"]) + f"{'ms':>8}"
+          + (f"{'d_cov':>7}{'prec_e':>7}{'prec_d':>7}{'d_err':>6}" if depth_check else ""))
     for s in summary:
         print(f"{s['matcher']:<{w}}{s['gap']:>4}{s['pairs']:>6}{s['matches']:>9.0f}{s['correct']:>9.0f}"
               f"{s['precision']:>7.2f}" + "".join(f"{s['auc@' + str(t)]:>8.2f}" for t in params["auc_thresholds_deg"])
-              + f"{s['time_ms']:>8.0f}")
+              + f"{s['time_ms']:>8.0f}"
+              + (f"{s['depth_coverage']:>7.2f}{s['precision_epi_on_depth']:>7.2f}{s['precision_depth']:>7.2f}"
+                 f"{s['depth_err_med_px']:>6.1f}" if depth_check else ""))
     print(f"\nResults: {out_dir}")
 
 

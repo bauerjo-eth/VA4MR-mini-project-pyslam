@@ -28,7 +28,6 @@ Usage (repo root, pySLAM env active):
 import argparse
 import shutil
 import time
-import warnings
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
@@ -43,12 +42,11 @@ from pyslam.io.ground_truth import groundtruth_factory
 from pyslam.local_features.feature_tracker import feature_tracker_factory
 from pyslam.local_features.feature_tracker_configs import FeatureTrackerConfigs
 from pyslam.slam import camera_from_config
-from pyslam.utilities.geometry import inv_T
 
 from depth_models import FP32_ONLY, make_depth_model, pick_device
-from kitti_lidar import KittiLidarDepth
 from matching_baseline import gt_pose, write_csv
-from patch_geometry import compute_patch_geometry, normal_angle_deg, normal_map, pixel_rays, project_points, sample_nearest
+from gt_depth import finite, gt_correspondences, gt_depth_source, project_or_nan, ray_at, sample_depth
+from patch_geometry import compute_patch_geometry, normal_angle_deg, normal_map, pixel_rays, sample_nearest
 
 DEPTH_METRICS = ["abs_rel", "sq_rel", "rmse", "rmse_log", "delta1", "delta2", "delta3"]
 
@@ -70,47 +68,6 @@ def median_scale(pred, gt):
     """median(GT) / median(pred) on pixels valid in both."""
     ok = np.isfinite(gt) & np.isfinite(pred) & (pred > 0)
     return float(np.median(gt[ok]) / np.median(pred[ok])) if ok.any() else np.nan
-
-
-def finite(*arrays):
-    ok = np.ones(len(arrays[0]), dtype=bool)
-    for a in arrays:
-        ok &= np.isfinite(a) & (a > 0)
-    return ok
-
-
-def sample_depth(depth, pts, radius=0):
-    """GT depth at points: nearest pixel (radius 0) or median of the valid depths in the window (sparse GT)."""
-    if radius == 0:
-        return sample_nearest(depth, pts)
-    h, w = depth.shape
-    offs = np.arange(-radius, radius + 1)
-    dy, dx = (o.ravel() for o in np.meshgrid(offs, offs, indexing="ij"))
-    x = np.round(pts[:, 0]).astype(int)[:, None] + dx[None]
-    y = np.round(pts[:, 1]).astype(int)[:, None] + dy[None]
-    inside = (x >= 0) & (x < w) & (y >= 0) & (y < h)
-    vals = np.where(inside, depth[np.clip(y, 0, h - 1), np.clip(x, 0, w - 1)], np.nan).astype(np.float64)
-    vals[~(vals > 0)] = np.nan
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", RuntimeWarning)  # no GT in the window -> NaN
-        return np.nanmedian(vals, axis=1)
-
-
-def gt_depth_source(params, dataset, camera):
-    """GT depth per frame [m], NaN = invalid: dataset depth (RGB-D) or KITTI raw LiDAR."""
-    src = params.get("gt_depth") or {"type": "dataset"}
-    if src["type"] == "kitti_lidar":
-        return KittiLidarDepth(src["drive_path"], src["calib_path"], camera.width, camera.height, src.get("cam", 2))
-    if src["type"] != "dataset":
-        raise ValueError(f"unknown gt_depth type: {src['type']}")
-
-    def from_dataset(frame_id):
-        raw = dataset.getDepth(frame_id)
-        if raw is None:
-            raise SystemExit("dataset without depth: set sensor_type: rgbd, or gt_depth")
-        return raw.astype(np.float32) * camera.depth_factor
-
-    return from_dataset
 
 
 def depth_rows(frame, models, frame_id, radius):
@@ -139,48 +96,6 @@ def depth_rows(frame, models, frame_id, radius):
                              "n": len(g), **depth_metrics(s * p, g), "scale": scale,
                              "time_ms": frame["time_ms"][name]})
     return rows
-
-
-def ray_at(rays, pts):
-    """Ray of the nearest pixel (clipped to the image)."""
-    h, w = rays.shape[:2]
-    x = np.clip(np.round(pts[:, 0]).astype(int), 0, w - 1)
-    y = np.clip(np.round(pts[:, 1]).astype(int), 0, h - 1)
-    return rays[y, x]
-
-
-def project_or_nan(X, camera):
-    """Pixels of 3D points in front of the camera, NaN otherwise."""
-    uv = np.full((len(X), 2), np.nan)
-    front = np.isfinite(X).all(axis=1) & (X[:, 2] > 0)
-    if front.any():
-        uv[front] = project_points(X[front], camera)
-    return uv
-
-
-def gt_correspondences(ref, cur, pts, rays, camera, params):
-    """Keypoints of ref -> GT depth + GT pose -> pixels in cur; keeps points visible in cur."""
-    T_cur_ref = inv_T(cur["T_w_c"]) @ ref["T_w_c"]
-    R, t = T_cur_ref[:3, :3], T_cur_ref[:3, 3]
-    radius = params.get("gt_sample_radius_px", 0)
-    z_ref = sample_depth(ref["gt"], pts, radius)
-    ok = finite(z_ref)
-    X_cur = (z_ref[:, None] * ray_at(rays, pts)) @ R.T + t
-    with np.errstate(invalid="ignore"):
-        ok &= X_cur[:, 2] > 0
-    # only rays inside the camera's field of view (distortion polynomial folds back outside)
-    with np.errstate(invalid="ignore", divide="ignore"):
-        xy = X_cur[:, :2] / X_cur[:, 2:3]
-    lo, hi = rays[..., :2].reshape(-1, 2).min(0), rays[..., :2].reshape(-1, 2).max(0)
-    ok &= np.all((xy >= lo) & (xy <= hi), axis=1)
-    u_cur = np.full((len(pts), 2), np.nan)
-    u_cur[ok] = project_or_nan(X_cur[ok], camera)
-    h, w = cur["gt"].shape
-    with np.errstate(invalid="ignore", divide="ignore"):
-        ok &= (u_cur[:, 0] >= 0) & (u_cur[:, 0] < w) & (u_cur[:, 1] >= 0) & (u_cur[:, 1] < h)
-        z_seen = sample_depth(cur["gt"], np.nan_to_num(u_cur), radius)
-        ok &= np.abs(z_seen - X_cur[:, 2]) / X_cur[:, 2] < params["visibility_rel_tol"]
-    return pts[ok], u_cur[ok], R, t
 
 
 NORMAL_KEYS = ["normal_err", "xview_gt", "xview_pred", "xview_pred_all"]
