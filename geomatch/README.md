@@ -104,7 +104,11 @@ Columns of `summary.csv`:
 | Column | Meaning |
 |---|---|
 | `putative` | matches proposed by the matcher |
-| `filter_kept` | matches left after the filter |
+| `filter_kept` | matches left after the filter (before RANSAC) |
+| `keep_ratio` | `filter_kept` / `putative` — share of matcher output the filter keeps (pre-RANSAC) |
+| `keep_vs_oracle` | `filter_kept` / oracle's `filter_kept` — kept count relative to #correct putative (pre-RANSAC; only when an oracle method is in the config) |
+| `filter_tp/fp/tn/fn` | confusion matrix of the filter itself: kept/dropped × GT correct/wrong (pre-RANSAC) |
+| `filter_precision`, `filter_f1` | precision and F1 of the kept set (pre-RANSAC) |
 | `filter_recall` | correct matches after the filter / correct putative matches: what the filter alone keeps (1.0 without a filter) |
 | `final` | matches left after RANSAC: what SLAM would get |
 | `correct`, `wrong` | final matches within / beyond `correct_px` of their epipolar line |
@@ -170,6 +174,30 @@ methods:
     matcher:    {type: my_matcher}
     filter:     {type: my_filter}         # RANSAC follows automatically
 ```
+
+## Learned filters + KITTI train/test split
+
+- The pipeline supports the **full KITTI odometry dataset** (`dataset.type: kitti_odometry`,
+  sequences 00–21 on disk, GT poses for 00–10). Set `base_path` in the config or the
+  `KITTI_ODOMETRY_PATH` env var; per-sequence intrinsics come from each `calib.txt` (P0).
+  The default `evaluation_config.yaml` (bundled KITTI 06 video) still works without it.
+- **Split: TRAIN = sequences 00–08, TEST = 09–10** (`kitti_train_config.yaml` /
+  `kitti_test_config.yaml`). Learned filters are trained on TRAIN only and evaluated on TEST only.
+- Two learned filters are registered: `learned_mlp` (MLP on 22 depth/descriptor features) and
+  `learned_cnn` (CNN on 2×32×32 log-depth patches + descriptor distance). Train with
+  `python -m geomatch.collect_training_data` + `python -m geomatch.train_filter.py` (GPU, seeded);
+  weights land in `data/models/` (gitignored — retrain to reproduce). Full provenance,
+  hyperparameter runs, timings and test-split results: **[TRAINING.md](TRAINING.md)**.
+- **Gap sweep:** training and evaluation work with multiple pair gaps. `collect_training_data
+  --gaps 1 5 10 20 50 80 --step 100` collects one pair set per gap (samples tagged with their
+  gap); `train_filter.py --data a.npz b.npz ... --tag gap10_80` trains one model on several
+  files and names the checkpoint by the training gap(s) (`mlp_gap10_80_best.pt`);
+  `evaluation_pipeline.py --config geomatch/kitti_test_gapsweep_config.yaml --gap 50` evaluates
+  any model set at any gap on the TEST split (the canonical `kitti_test_config.yaml` stays
+  single-gap 80). Sweeps were run for both MLP and CNN. `summary.csv` also records the
+  VO-relevant keep counts: `keep_ratio` (kept/putative) and `keep_vs_oracle` (kept relative to
+  the oracle's kept = #correct putative). Metric choices and the full model × gap matrices:
+  TRAINING.md §"Gap sweep".
 
 ## To-do
 
