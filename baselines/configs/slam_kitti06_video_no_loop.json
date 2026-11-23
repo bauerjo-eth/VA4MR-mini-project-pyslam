@@ -1,7 +1,6 @@
 // WP1 SLAM baselines without loop closing: KITTI 06, mono, color video shipped with pySLAM
 // - measures front-end drift only (tracking + local mapping), no loop correction
-// - reason: with SuperPoint (BF) ~every frame becomes a KF -> loop detection falls behind
-//   (186 of 1078 KFs processed) -> loop never detected -> SLAM result reflects that bottleneck
+// - no loop closing = no relocalization in pySLAM -> a tracking loss is final (check the number of poses per run)
 // run (repo root): python main_slam_evaluation.py -c baselines/configs/slam_kitti06_video_no_loop.json
 {
   "num_threads": 1,                     // runs sequential, no interference

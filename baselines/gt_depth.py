@@ -12,8 +12,12 @@ import numpy as np
 
 from pyslam.utilities.geometry import inv_T
 
-from kitti_lidar import KittiLidarDepth
-from patch_geometry import project_points, sample_nearest
+try:  # imported as baselines.gt_depth (repo root on sys.path)
+    from .kitti_lidar import KittiLidarDepth
+    from .patch_geometry import project_points, sample_nearest
+except ImportError:  # run from the baseline scripts (baselines/ on sys.path)
+    from kitti_lidar import KittiLidarDepth
+    from patch_geometry import project_points, sample_nearest
 
 
 def finite(*arrays):

@@ -13,6 +13,10 @@ Match correctness, two checks:
   same GT correspondences as the depth baseline); correct = on the line and within threshold_px of the true point.
   Only matches with GT depth (KITTI LiDAR: a part, TUM Kinect: most); both precisions on that same subset
   -> difference = wrong matches on the epipolar line
+- both directions: the same depth check also from image 2 back to image 1. A wrong GT depth at the keypoint
+  (LiDAR at object borders) moves the true point along the line too, so it looks like a wrong match, but only in
+  one direction; a wrong match fails in both. On the matches on the line with a GT point in both directions:
+  hidden_wrong_fwd (image 1 -> 2 only, as precision_depth) and hidden_wrong_both (confirmed in both directions)
 LIGHTGLUE_FULL: pySLAM's LIGHTGLUE preset with all 9 LightGlue layers (pySLAM builds it with 2).
 Timing: median per pair; the first pair of each matcher runs once untimed (GPU / library warm-up).
 info.txt records platform, GPU and the device of each network (pySLAM: CUDA if available, else CPU).
@@ -150,19 +154,26 @@ def evaluate_pair(tracker, camera, ref, cur, params, rays=None):
     depth = {}
     if rays is not None:
         dc = params["depth_check"]
-        has_gt = np.zeros(n_matches, dtype=bool)
-        err = np.full(n_matches, np.nan)
+        has_gt = has_back = np.zeros(n_matches, dtype=bool)
+        err = err_back = np.full(n_matches, np.nan)
         if n_matches > 0:
             p_ref = np.asarray(res.kps_ref_matched, dtype=float).reshape(-1, 2)  # image pixels (as the projection)
             p_cur = np.asarray(res.kps_cur_matched, dtype=float).reshape(-1, 2)
             u_gt, has_gt, _, _ = gt_reproject(ref, cur, p_ref, rays, camera, dc)
             err = np.linalg.norm(p_cur - u_gt, axis=1)
+            u_back, has_back, _, _ = gt_reproject(cur, ref, p_cur, rays, camera, dc)  # same check, image 2 -> 1
+            err_back = np.linalg.norm(p_ref - u_back, axis=1)
         on_line_gt = has_gt & on_line
+        both = on_line_gt & has_back
+        wrong, wrong_back = err >= dc["threshold_px"], err_back >= dc["threshold_px"]
         depth = {
             "n_depth": int(has_gt.sum()),  # matches with a GT point
             "n_depth_epi": int(on_line_gt.sum()),  # ... that pass the epipolar check
-            "n_depth_correct": int(np.sum(on_line_gt & (err < dc["threshold_px"]))),  # ... and are at the GT point
+            "n_depth_correct": int(np.sum(on_line_gt & ~wrong)),  # ... and are at the GT point
             "depth_err_med_px": float(np.median(err[on_line_gt])) if on_line_gt.any() else np.nan,
+            "n_both": int(both.sum()),  # matches on the line with a GT point in both directions
+            "n_both_wrong_fwd": int(np.sum(both & wrong)),  # ... not at the GT point, image 1 -> 2
+            "n_both_wrong_both": int(np.sum(both & wrong & wrong_back)),  # ... and not image 2 -> 1 either
         }
 
     # relative pose from matches (essential matrix + RANSAC)
@@ -220,6 +231,10 @@ def summarize(rows, matchers, gaps, auc_thresholds):
                 row["precision_epi_on_depth"] = sum(r["n_depth_epi"] for r in sel) / n_depth if n_depth else np.nan
                 row["precision_depth"] = sum(r["n_depth_correct"] for r in sel) / n_depth if n_depth else np.nan
                 row["depth_err_med_px"] = float(np.nanmedian([r["depth_err_med_px"] for r in sel]))
+                n_both = sum(r["n_both"] for r in sel)  # wrong matches on the line, GT point in both directions
+                row["both_coverage"] = n_both / max(sum(r["n_matches"] for r in sel), 1)
+                row["hidden_wrong_fwd"] = sum(r["n_both_wrong_fwd"] for r in sel) / n_both if n_both else np.nan
+                row["hidden_wrong_both"] = sum(r["n_both_wrong_both"] for r in sel) / n_both if n_both else np.nan
             summary.append(row)
     return summary
 
@@ -306,13 +321,14 @@ def main():
     w = max(len(m) for m in ["matcher", *params["matchers"]]) + 1
     print(f"\n{'matcher':<{w}}{'gap':>4}{'pairs':>6}{'matches':>9}{'correct':>9}{'prec':>7}"
           + "".join(f"{'auc@' + str(t):>8}" for t in params["auc_thresholds_deg"]) + f"{'ms':>8}"
-          + (f"{'d_cov':>7}{'prec_e':>7}{'prec_d':>7}{'d_err':>6}" if depth_check else ""))
+          + (f"{'d_cov':>7}{'prec_e':>7}{'prec_d':>7}{'d_err':>6}{'h_fwd':>7}{'h_both':>7}" if depth_check else ""))
     for s in summary:
         print(f"{s['matcher']:<{w}}{s['gap']:>4}{s['pairs']:>6}{s['matches']:>9.0f}{s['correct']:>9.0f}"
               f"{s['precision']:>7.2f}" + "".join(f"{s['auc@' + str(t)]:>8.2f}" for t in params["auc_thresholds_deg"])
               + f"{s['time_ms']:>8.0f}"
               + (f"{s['depth_coverage']:>7.2f}{s['precision_epi_on_depth']:>7.2f}{s['precision_depth']:>7.2f}"
-                 f"{s['depth_err_med_px']:>6.1f}" if depth_check else ""))
+                 f"{s['depth_err_med_px']:>6.1f}{s['hidden_wrong_fwd']:>7.2f}{s['hidden_wrong_both']:>7.2f}"
+                 if depth_check else ""))
     print(f"\nResults: {out_dir}")
 
 
