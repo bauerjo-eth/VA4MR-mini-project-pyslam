@@ -184,6 +184,13 @@ methods:
   `python -m geomatch.collect_training_data` + `python -m geomatch.train_filter.py` (GPU, seeded);
   weights land in `data/models/` (gitignored — retrain to reproduce). Full provenance,
   hyperparameter runs, timings and test-split results: **[TRAINING.md](TRAINING.md)**.
+- **Gap sweep:** training and evaluation work with multiple pair gaps. `collect_training_data
+  --gaps 1 5 10 20 50 80 --step 100` collects one pair set per gap (samples tagged with their
+  gap); `train_filter.py --data a.npz b.npz ... --tag gap10_80` trains one model on several
+  files and names the checkpoint by the training gap(s) (`mlp_gap10_80_best.pt`);
+  `evaluation_pipeline.py --config geomatch/kitti_test_gapsweep_config.yaml --gap 50` evaluates
+  any model set at any gap on the TEST split (the canonical `kitti_test_config.yaml` stays
+  single-gap 80). Cross-matrix results (model × eval gap): TRAINING.md §"Gap sweep".
 
 ## To-do
 

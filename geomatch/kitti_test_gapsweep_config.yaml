@@ -1,0 +1,80 @@
+# GAP-SWEEP evaluation config: TEST split (KITTI 09-10) evaluated at MULTIPLE pair gaps via
+# the pipeline's --gap override, e.g.
+#   python -m geomatch.evaluation_pipeline --config geomatch/kitti_test_gapsweep_config.yaml --gap 1
+#   ... --gap 5 / 10 / 20 / 50 / 80
+# The canonical single-gap test config remains kitti_test_config.yaml (gap 80).
+#
+# Methods: the MLP learned filter trained on each single gap (tags gap1/gap5/gap10/gap20/
+# gap50/gap80) plus the one trained on ALL gaps (tag 'all'), all at thresh 0.5, next to the
+# ransac-only baseline and the GT oracle. Weights: geomatch/data/models/gaps/mlp_<tag>_best.pt
+# (train via train_filter.py --data ... --tag <tag> --out-dir geomatch/data/models/gaps).
+# The effective config (including the --gap override) is saved into each results folder.
+
+name: kitti_test_gapsweep
+
+dataset:
+  type: kitti_odometry
+  # base_path: /path/to/kitti_odometry/dataset   # or: export KITTI_ODOMETRY_PATH=...
+  sequences: ["09", "10"]                          # TEST split (held out from training)
+  pairs:
+    start: 6
+    stop: -1
+    step: 10
+    gap: 80                  # default; override per run with --gap
+
+depth:
+  model: depth-anything/DA3METRIC-LARGE
+
+ransac:
+  threshold_px: 1.0
+  confidence: 0.99
+
+grading:
+  correct_px: 4.0
+  pose_auc_deg: [5, 10, 20]
+
+methods:
+  - name: sift                                   # ransac-only baseline
+    descriptor: {type: rootsift}
+    matcher:    {type: nn_ratio, ratio: 0.8}
+    filter:     {type: none}
+
+  - name: mlp_gap1
+    descriptor: {type: rootsift}
+    matcher:    {type: nn_ratio, ratio: 0.8}
+    filter:     {type: learned_mlp, model_path: geomatch/data/models/gaps/mlp_gap1_best.pt, thresh: 0.5}
+
+  - name: mlp_gap5
+    descriptor: {type: rootsift}
+    matcher:    {type: nn_ratio, ratio: 0.8}
+    filter:     {type: learned_mlp, model_path: geomatch/data/models/gaps/mlp_gap5_best.pt, thresh: 0.5}
+
+  - name: mlp_gap10
+    descriptor: {type: rootsift}
+    matcher:    {type: nn_ratio, ratio: 0.8}
+    filter:     {type: learned_mlp, model_path: geomatch/data/models/gaps/mlp_gap10_best.pt, thresh: 0.5}
+
+  - name: mlp_gap20
+    descriptor: {type: rootsift}
+    matcher:    {type: nn_ratio, ratio: 0.8}
+    filter:     {type: learned_mlp, model_path: geomatch/data/models/gaps/mlp_gap20_best.pt, thresh: 0.5}
+
+  - name: mlp_gap50
+    descriptor: {type: rootsift}
+    matcher:    {type: nn_ratio, ratio: 0.8}
+    filter:     {type: learned_mlp, model_path: geomatch/data/models/gaps/mlp_gap50_best.pt, thresh: 0.5}
+
+  - name: mlp_gap80
+    descriptor: {type: rootsift}
+    matcher:    {type: nn_ratio, ratio: 0.8}
+    filter:     {type: learned_mlp, model_path: geomatch/data/models/gaps/mlp_gap80_best.pt, thresh: 0.5}
+
+  - name: mlp_all                                # trained on gaps 1,5,10,20,50,80 jointly
+    descriptor: {type: rootsift}
+    matcher:    {type: nn_ratio, ratio: 0.8}
+    filter:     {type: learned_mlp, model_path: geomatch/data/models/gaps/mlp_all_best.pt, thresh: 0.5}
+
+  - name: sift_oracle                            # REFERENCE ONLY: uses the ground truth
+    descriptor: {type: rootsift}
+    matcher:    {type: nn_ratio, ratio: 0.8}
+    filter:     {type: gt_epipolar, err_px: 4.0}

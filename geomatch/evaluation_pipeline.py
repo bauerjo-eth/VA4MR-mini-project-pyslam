@@ -35,7 +35,6 @@ import csv
 import json
 import logging
 import os
-import shutil
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -111,10 +110,10 @@ def load_poses(path):
     return poses
 
 
-def load_video_dataset(ds):
+def load_video_dataset(ds, with_frames=True):
     """Single-video dataset (bundled KITTI 06). Backward compatible with the original config."""
     pairs = make_pairs(ds["pairs"], 10**9)  # video mode: stop is explicit, no clamping needed
-    frames = read_frames(ds["video"], {i for pair in pairs for i in pair})
+    frames = read_frames(ds["video"], {i for pair in pairs for i in pair}) if with_frames else {}
     k = ds["intrinsics"]
     K = np.array([[k["fx"], 0, k["cx"]], [0, k["fy"], k["cy"]], [0, 0, 1]])
     return [SequenceData(name=ds.get("name", "video"), pairs=pairs, frames=frames,
@@ -130,7 +129,7 @@ def load_kitti_calib(seq_dir):
     raise ValueError(f"{seq_dir}/calib.txt: no P0 line")
 
 
-def load_kitti_odometry_dataset(ds):
+def load_kitti_odometry_dataset(ds, with_frames=True):
     """Full KITTI odometry dataset, one SequenceData per sequence in `sequences`.
 
     base_path resolution: config `base_path` first, then the KITTI_ODOMETRY_PATH env var.
@@ -159,19 +158,21 @@ def load_kitti_odometry_dataset(ds):
                 f"Only sequences 00-10 have ground-truth poses.")
         n_frames = len(list(image_dir.glob("*.png")))
         pairs = make_pairs(ds["pairs"], n_frames)
-        frames = read_image_folder(image_dir, {i for pair in pairs for i in pair})
+        frames = read_image_folder(image_dir, {i for pair in pairs for i in pair}) if with_frames else {}
         out.append(SequenceData(name=f"kitti{seq}", pairs=pairs, frames=frames,
                                 poses=load_poses(pose_file), K=load_kitti_calib(seq_dir)))
     return out
 
 
-def load_dataset(ds):
-    """Config `dataset` block -> list of SequenceData. Dispatch on `type` (default: video)."""
+def load_dataset(ds, with_frames=True):
+    """Config `dataset` block -> list of SequenceData. Dispatch on `type` (default: video).
+    with_frames=False skips loading images (metadata only: pairs/poses/K) — used by the
+    training-data collector, which loads frames itself when sweeping over multiple gaps."""
     dtype = ds.get("type", "video")
     if dtype == "kitti_odometry":
-        return load_kitti_odometry_dataset(ds)
+        return load_kitti_odometry_dataset(ds, with_frames)
     if dtype == "video":
-        return load_video_dataset(ds)
+        return load_video_dataset(ds, with_frames)
     raise ValueError(f"unknown dataset type '{dtype}' (use 'video' or 'kitti_odometry')")
 
 
@@ -201,11 +202,13 @@ def guard_against_train_split_leak(cfg, sequences):
 # ---------- setup ----------
 
 def setup_output(cfg, config_path):
-    """Create the results folder and copy the config into it. Logging: log.info() goes to the
-    console and log.txt, log.debug() (details) only to log.txt."""
+    """Create the results folder and save the EFFECTIVE config into it (CLI overrides such as
+    --gap are already applied to cfg, so the saved config.yaml is exactly what was run).
+    Logging: log.info() goes to the console and log.txt, log.debug() (details) only to log.txt."""
     out_dir = RESULTS_DIR / f"{cfg['name']}_{datetime.now():%Y-%m-%d_%H%M%S}"
     out_dir.mkdir(parents=True)
-    shutil.copy(config_path, out_dir / "config.yaml")
+    with open(out_dir / "config.yaml", "w", encoding="utf-8") as f:
+        yaml.safe_dump(cfg, f, sort_keys=False)
     log.setLevel(logging.DEBUG)
     console, logfile = logging.StreamHandler(), logging.FileHandler(out_dir / "log.txt", encoding="utf-8")
     console.setLevel(logging.INFO)
@@ -374,10 +377,16 @@ def log_table(rows):
 def main():
     parser = argparse.ArgumentParser(description="Run the geomatch evaluation from a config file.")
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG, help="path to a YAML config")
+    parser.add_argument("--gap", type=int, default=None,
+                        help="override the pair gap of the config (gap sweep evaluation on the "
+                             "same TEST sequences; the effective config is saved to the results)")
     args = parser.parse_args()
 
     with open(args.config, encoding="utf-8") as f:
         cfg = yaml.safe_load(f)
+    if args.gap is not None:
+        cfg["dataset"]["pairs"]["gap"] = args.gap
+        cfg["name"] = f"{cfg['name']}_gap{args.gap}"
     out_dir = setup_output(cfg, args.config)
     sequences = load_dataset(cfg["dataset"])
     guard_against_train_split_leak(cfg, sequences)

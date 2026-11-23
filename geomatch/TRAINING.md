@@ -141,3 +141,85 @@ python -m geomatch.evaluation_pipeline --config geomatch/kitti_test_config.yaml
 Seeds (0) + recorded hyperparams/versions make the runs replicable on other machines.
 Models and data are gitignored (`geomatch/data/`) — retrain with the commands above;
 trained weights are not committed.
+
+## Gap sweep (multi-gap training, cross-gap evaluation) — 2026-11-23
+
+Deviation from the single-gap protocol above: models are now identified by the gap(s) they
+were trained on (`--tag`), training data can be collected for several gaps in one run
+(`--gaps`), and evaluation can override the pair gap (`--gap`). The canonical TEST config
+(`kitti_test_config.yaml`) is unchanged and still gap=80.
+
+### What changed in the code
+- `collect_training_data.py`: `--gaps 1 5 10 20 50 80` + `--step` overrides; frames are loaded
+  once per sequence (union over all gaps), every sample is tagged with its pair's gap
+  (`gap_ids` in the .npz, gaps+step in the sidecar .json).
+- `train_filter.py`: `--data` accepts several .npz (concatenated, pair ids offset per file so
+  the pair-wise val split stays clean); `--tag gap80` / `all` names checkpoints
+  `<model>_<tag>_best.pt`; val metrics include a per-gap AUC breakdown.
+- `evaluation_pipeline.py`: `--gap G` CLI override (effective config saved into the results
+  folder, result name gets a `_gapG` suffix); `load_dataset(..., with_frames=False)` for
+  metadata-only loading used by the collector.
+- `kitti_test_gapsweep_config.yaml`: TEST 09-10, all 7 MLP models + sift baseline + oracle.
+
+### Training data per gap (TRAIN 00-08, step 100, seed 0, max 200 matches/pair)
+
+| gap | pairs | samples | % correct | wall s (depth s) | file |
+|---|---|---|---|---|---|
+| 1 | 206 | 41,200 | 96.3% | 63 (0) | `kitti_train_gap1.npz` |
+| 5 | 206 | 39,979 | 84.8% | 107 (45) | `kitti_train_gap5.npz` |
+| 10 | 206 | 31,933 | 72.4% | 107 (45) | `kitti_train_gap10.npz` |
+| 20 | 206 | 19,182 | 54.7% | 60 (0) | `kitti_train_gap20.npz` |
+| 50 | 205 | 9,536 | 25.3% | 106 (45) | `kitti_train_gap50.npz` |
+| 80 | 201 | 7,446 | 13.2% | 58 (0) | `kitti_train_gap80.npz` |
+
+### Models (MLP, GPU GTX 1660, seed 0, best-of-grid val AUC; weights `data/models/gaps/`)
+
+| tag (trained on) | val AUC | per-gap val AUC (best run) |
+|---|---|---|
+| gap1 | 0.8817 | {1: 0.882} |
+| gap5 | 0.8402 | {5: 0.840} |
+| gap10 | 0.8771 | {10: 0.877} |
+| gap20 | 0.8719 | {20: 0.872} |
+| gap50 | 0.8921 | {50: 0.892} |
+| gap80 | 0.8629 | {80: 0.863} |
+| all (1,5,10,20,50,80; 149,276 samples / 1,230 pairs) | 0.9240 | {1: 0.766, 5: 0.833, 10: 0.905, 20: 0.901, 50: 0.890, 80: 0.861} |
+
+### Cross evaluation: precision_epi after RANSAC, TEST 09-10, per eval gap
+
+| model \ eval gap | 1 | 5 | 10 | 20 | 50 | 80 |
+|---|---|---|---|---|---|---|
+| sift (ransac only) | 0.998 | 0.963 | 0.899 | 0.819 | 0.417 | 0.111 |
+| mlp_gap1 | 0.999 | 0.979 | 0.941 | 0.901 | 0.821 | 0.443 |
+| mlp_gap5 | 0.999 | 0.983 | 0.960 | 0.904 | 0.783 | **0.529** |
+| mlp_gap10 | 1.000 | 0.983 | 0.949 | 0.897 | 0.759 | 0.401 |
+| mlp_gap20 | 1.000 | 0.991 | 0.965 | 0.898 | 0.662 | 0.365 |
+| mlp_gap50 | 1.000 | 0.993 | 0.968 | 0.897 | 0.634 | 0.344 |
+| mlp_gap80 | 0.999 | 0.979 | 0.939 | 0.876 | 0.639 | 0.348 |
+| **mlp_all** | 0.998 | 0.971 | 0.928 | 0.878 | **0.778** | 0.524 |
+| sift_oracle | 1.000 | 1.000 | 1.000 | 1.000 | 1.000 | 1.000 |
+
+Results: `results/kitti_test_gapsweep_gap{1,5,10,20,50,80}_2026-11-23_*/{summary,per_pair}.csv`.
+
+### Findings
+- Small gaps are easy for everyone (sift alone: 0.998 at gap 1); the learned filters matter at
+  **wide baselines**: at gap 80 every learned model beats ransac-only sift (0.111) by 3-5x.
+- The gap80-trained model is NOT the best at gap 80 (0.348): models trained on mid gaps
+  generalize better (gap5-trained: 0.529). The `all` model is best at gap 50 (0.778) and second
+  at gap 80 (0.524) — training on the gap mix is the robust choice.
+- Learned filters also cut runtime at gap 80 (269 vs 403 ms/pair for sift) due to less RANSAC input.
+
+### Reproduce the sweep
+```bash
+export KITTI_ODOMETRY_PATH=/path/to/kitti_odometry/dataset
+for g in 1 5 10 20 50 80; do
+  python -m geomatch.collect_training_data --config geomatch/kitti_train_config.yaml \
+      --gaps $g --step 100 --out geomatch/data/training/kitti_train_gap$g.npz --seed 0
+  python -m geomatch.train_filter --data geomatch/data/training/kitti_train_gap$g.npz \
+      --tag gap$g --models mlp --out-dir geomatch/data/models/gaps --seed 0
+done
+python -m geomatch.train_filter --data geomatch/data/training/kitti_train_gap{1,5,10,20,50,80}.npz \
+    --tag all --models mlp --out-dir geomatch/data/models/gaps --seed 0
+for g in 1 5 10 20 50 80; do
+  python -m geomatch.evaluation_pipeline --config geomatch/kitti_test_gapsweep_config.yaml --gap $g
+done
+```

@@ -13,9 +13,14 @@ For each hyperparameter run (a small built-in grid per model, see RUNS below) it
   - appends the run to geomatch/data/models/runs_<timestamp>.json (hyperparams, seed,
     val metrics, train time, torch/CUDA versions) — the replicability record
 
-The best run per model (by val AUC) is also copied to mlp_best.pt / cnn_best.pt, which is
-what kitti_test_config.yaml points at. Test-split evaluation happens separately via
-evaluation_pipeline.py --config geomatch/kitti_test_config.yaml.
+The best run per model (by val AUC) is also copied to <model>_<tag>_best.pt, where --tag
+names the training gap(s) (e.g. 'gap80', 'all') — so every model is identified by which GAP(s)
+it was trained on. Test-split evaluation happens separately via evaluation_pipeline.py
+--config geomatch/kitti_test_config.yaml (canonical single gap) or with --gap G for a sweep.
+
+Multiple --data files are concatenated (pair ids are offset per file), so one model can be
+trained on several gaps at once, e.g. all six gap files for the 'all' model. Val metrics
+include a per-gap AUC breakdown (from gap_ids in the .npz).
 
 Nothing here ever touches the TEST split (KITTI 09-10).
 """
@@ -33,7 +38,7 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, TensorDataset
 
-from geomatch.learned_filter import (DEFAULT_CNN, DEFAULT_MLP, MODELS_DIR, PATCH_SIZE,
+from geomatch.learned_filter import (MODELS_DIR, PATCH_SIZE,
                                       DepthPatchCNN, MLP, make_model, save_checkpoint)
 
 log = logging.getLogger("geomatch")
@@ -69,10 +74,32 @@ def set_seed(seed):
     torch.backends.cudnn.benchmark = False
 
 
-def load_data(path):
-    z = np.load(path)
-    return (z["mlp_features"].astype(np.float32), z["cnn_patches"].astype(np.float32) / 255.0,
-            z["labels"].astype(np.float32), z["pair_ids"].astype(np.int64))
+def load_data(paths):
+    """One or more .npz files -> concatenated (features, patches, labels, pair_ids, gap_ids).
+    pair_ids are offset per file so the pair-wise val split never mixes pairs from different
+    files; gap_ids (per-sample pair gap, 0 if the file predates the gap sweep) are concatenated."""
+    F, P, L, PI, G = [], [], [], [], []
+    offset = 0
+    for path in paths:
+        z = np.load(path)
+        n = len(z["labels"])
+        F.append(z["mlp_features"].astype(np.float32))
+        P.append(z["cnn_patches"].astype(np.float32) / 255.0)
+        L.append(z["labels"].astype(np.float32))
+        PI.append(z["pair_ids"].astype(np.int64) + offset)
+        G.append(z["gap_ids"].astype(np.int64) if "gap_ids" in z else np.zeros(n, np.int64))
+        offset += int(z["pair_ids"].max()) + 1 if n else 0
+    return (np.concatenate(F), np.concatenate(P), np.concatenate(L),
+            np.concatenate(PI), np.concatenate(G))
+
+
+def auc_of(prob, y):
+    """AUC via rank statistic (Mann-Whitney), robust and dependency-free."""
+    order = np.argsort(prob)
+    ranks = np.empty(len(prob))
+    ranks[order] = np.arange(1, len(prob) + 1)
+    pos = y == 1
+    return float((ranks[pos].sum() - pos.sum() * (pos.sum() + 1) / 2) / (pos.sum() * (~pos).sum()))
 
 
 def split_by_pair(pair_ids, val_frac, seed):
@@ -93,19 +120,15 @@ def metrics_from_logits(logits, labels, thresh=0.5):
     pred = prob > thresh
     tp = int((pred & (y == 1)).sum()); fp = int((pred & (y == 0)).sum())
     fn = int((~pred & (y == 1)).sum()); tn = int((~pred & (y == 0)).sum())
-    # AUC via rank statistic (Mann-Whitney), robust and dependency-free
-    order = np.argsort(prob)
-    ranks = np.empty(len(prob)); ranks[order] = np.arange(1, len(prob) + 1)
-    pos = y == 1
-    auc = (ranks[pos].sum() - pos.sum() * (pos.sum() + 1) / 2) / (pos.sum() * (~pos).sum())
-    return dict(auc=round(float(auc), 4),
+    auc = auc_of(prob, y)
+    return dict(auc=round(auc, 4),
                 acc=round((tp + tn) / len(y), 4),
                 precision=round(tp / max(tp + fp, 1), 4),
                 recall=round(tp / max(tp + fn, 1), 4),
                 thresh=thresh)
 
 
-def train_one(model_type, run, feats, patches, labels, pair_ids, val_frac, seed, device):
+def train_one(model_type, run, feats, patches, labels, pair_ids, gap_ids, val_frac, seed, device):
     set_seed(seed)
     tr, va = split_by_pair(pair_ids, val_frac, seed)
 
@@ -166,19 +189,36 @@ def train_one(model_type, run, feats, patches, labels, pair_ids, val_frac, seed,
         else:
             logits = torch.cat([model(b[0].to(device), b[1].to(device)) for b in batches(ds_va, False)])
     val = metrics_from_logits(logits.cpu(), torch.from_numpy(labels[va]))
+    # per-gap val AUC (gap-sweep diagnostics): how well the model does on each training gap
+    prob = torch.sigmoid(logits.cpu()).numpy()
+    y = labels[va]
+    per_gap = {}
+    for g in np.unique(gap_ids[va]):
+        m = gap_ids[va] == g
+        if m.sum() > 20 and 0 < y[m].sum() < m.sum():
+            per_gap[int(g)] = round(auc_of(prob[m], y[m]), 4)
+    val["per_gap_auc"] = per_gap
     return model, val, train_s, epoch_times, feat_mean, feat_std, extra_mean, extra_std
 
 
 def main():
     parser = argparse.ArgumentParser(description="Train learned match filters (TRAIN split only).")
-    parser.add_argument("--data", type=Path,
-                        default=Path(__file__).parent / "data" / "training" / "kitti_train.npz")
+    parser.add_argument("--data", type=Path, nargs="+",
+                        default=[Path(__file__).parent / "data" / "training" / "kitti_train.npz"],
+                        help="one or more .npz training files (concatenated; use several to "
+                             "train one model on several gaps)")
+    parser.add_argument("--tag", type=str, default=None,
+                        help="name tag for this training set, e.g. 'gap80' or 'all' — checkpoints "
+                             "are written as <model>_<tag>_<run>.pt and <model>_<tag>_best.pt, so "
+                             "the model is identified by the gap(s) it was trained on")
     parser.add_argument("--models", nargs="+", default=["linear", "mlp", "cnn"],
                         choices=["linear", "mlp", "cnn"])
     parser.add_argument("--val-frac", type=float, default=0.15)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--out-dir", type=Path, default=MODELS_DIR)
     args = parser.parse_args()
+    if args.tag is None:  # default: derive from the data file name(s)
+        args.tag = "+".join(p.stem.replace("kitti_train", "").strip("_") or "base" for p in args.data)
 
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -190,16 +230,21 @@ def main():
     # split guard: the training npz must come from the TRAIN split (00-08) only — its sidecar
     # .json records the sequences it was collected from; refuse TEST sequences (09-10)
     from geomatch.learned_filter import assert_train_split_only
-    sidecar = Path(args.data).with_suffix(".json")
-    if sidecar.exists():
-        assert_train_split_only(json.load(open(sidecar))["sequences"])
+    train_sequences = []
+    for data_path in args.data:
+        sidecar = Path(data_path).with_suffix(".json")
+        if sidecar.exists():
+            meta = json.load(open(sidecar))
+            assert_train_split_only(meta["sequences"])
+            train_sequences = meta["sequences"]
 
-    feats, patches, labels, pair_ids = load_data(args.data)
-    log.info(f"data: {args.data}  {len(labels)} samples, {labels.mean():.1%} correct, "
-             f"{len(np.unique(pair_ids))} pairs")
+    feats, patches, labels, pair_ids, gap_ids = load_data(args.data)
+    log.info(f"data: {[str(p) for p in args.data]}  {len(labels)} samples, {labels.mean():.1%} correct, "
+             f"{len(np.unique(pair_ids))} pairs, gaps={sorted(set(gap_ids.tolist()))}, tag='{args.tag}'")
 
     stamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
-    runs_log = {"created": datetime.now().isoformat(timespec="seconds"), "data": str(args.data),
+    runs_log = {"created": datetime.now().isoformat(timespec="seconds"), "data": [str(p) for p in args.data],
+                "tag": args.tag,
                 "seed": args.seed, "val_frac": args.val_frac, "device": device,
                 "torch": torch.__version__, "cuda": torch.version.cuda,
                 "gpu": torch.cuda.get_device_name(0) if device == "cuda" else None,
@@ -210,8 +255,9 @@ def main():
         best = None
         for run in RUNS[model_type]:
             model, val, train_s, epoch_times, fm, fs, em, es = train_one(
-                model_type, run, feats, patches, labels, pair_ids, args.val_frac, args.seed, device)
-            ckpt_path = args.out_dir / f"{model_type}_{run['name']}.pt"
+                model_type, run, feats, patches, labels, pair_ids, gap_ids,
+                args.val_frac, args.seed, device)
+            ckpt_path = args.out_dir / f"{model_type}_{args.tag}_{run['name']}.pt"
             save_checkpoint(ckpt_path, model_type, model, {
                 "model_kwargs": (dict(in_dim=feats.shape[1], hidden=run["hidden"],
                                       dropout=run.get("dropout", 0.0))
@@ -223,22 +269,23 @@ def main():
                 "patch_size": PATCH_SIZE if model_type in ("mlp", "linear") else run.get("patch", PATCH_SIZE),
                 "hyperparams": run, "seed": args.seed, "val_metrics": val,
                 "train_time_s": round(train_s, 1), "epoch_times_s": epoch_times,
-                "train_data": str(args.data),
-                "train_sequences": json.load(open(Path(args.data).with_suffix(".json")))["sequences"],
+                "train_data": [str(p) for p in args.data],
+                "train_tag": args.tag,
+                "train_sequences": train_sequences,
             })
             entry = {"model": model_type, "run": run["name"], "val": val,
                      "train_time_s": round(train_s, 1), "checkpoint": str(ckpt_path)}
             runs_log["runs"].append(entry)
             log.info(f"[{model_type}/{run['name']}] val AUC={val['auc']} acc={val['acc']} "
-                     f"P={val['precision']} R={val['recall']} | train {train_s:.1f} s "
-                     f"({run['epochs']} ep, mean {np.mean(epoch_times):.2f} s/ep)")
+                     f"P={val['precision']} R={val['recall']} per_gap={val['per_gap_auc']} | "
+                     f"train {train_s:.1f} s ({run['epochs']} ep, mean {np.mean(epoch_times):.2f} s/ep)")
             if best is None or val["auc"] > best[0]["val"]["auc"]:
                 best = (entry, ckpt_path)
-        default_name = {"mlp": DEFAULT_MLP, "cnn": DEFAULT_CNN}.get(model_type, str(MODELS_DIR / f"{model_type}_best.pt"))
-        best_path = args.out_dir / Path(default_name).name
+        # best checkpoint is named by the training gap(s): <model>_<tag>_best.pt
+        best_path = args.out_dir / f"{model_type}_{args.tag}_best.pt"
         import shutil
         shutil.copy(best[1], best_path)
-        log.info(f"[{model_type}] best run '{best[0]['run']}' (val AUC {best[0]['val']['auc']}) -> {best_path}")
+        log.info(f"[{model_type}/{args.tag}] best run '{best[0]['run']}' (val AUC {best[0]['val']['auc']}) -> {best_path}")
 
     log_path = args.out_dir / f"runs_{stamp}.json"
     with open(log_path, "w", encoding="utf-8") as f:
