@@ -104,7 +104,11 @@ Columns of `summary.csv`:
 | Column | Meaning |
 |---|---|
 | `putative` | matches proposed by the matcher |
-| `filter_kept` | matches left after the filter |
+| `filter_kept` | matches left after the filter (before RANSAC) |
+| `keep_ratio` | `filter_kept` / `putative` — share of matcher output the filter keeps (pre-RANSAC) |
+| `keep_vs_oracle` | `filter_kept` / oracle's `filter_kept` — kept count relative to #correct putative (pre-RANSAC; only when an oracle method is in the config) |
+| `filter_tp/fp/tn/fn` | confusion matrix of the filter itself: kept/dropped × GT correct/wrong (pre-RANSAC) |
+| `filter_precision`, `filter_f1` | precision and F1 of the kept set (pre-RANSAC) |
 | `filter_recall` | correct matches after the filter / correct putative matches: what the filter alone keeps (1.0 without a filter) |
 | `final` | matches left after RANSAC: what SLAM would get |
 | `correct`, `wrong` | final matches within / beyond `correct_px` of their epipolar line |
@@ -190,7 +194,10 @@ methods:
   files and names the checkpoint by the training gap(s) (`mlp_gap10_80_best.pt`);
   `evaluation_pipeline.py --config geomatch/kitti_test_gapsweep_config.yaml --gap 50` evaluates
   any model set at any gap on the TEST split (the canonical `kitti_test_config.yaml` stays
-  single-gap 80). Cross-matrix results (model × eval gap): TRAINING.md §"Gap sweep".
+  single-gap 80). Sweeps were run for both MLP and CNN. `summary.csv` also records the
+  VO-relevant keep counts: `keep_ratio` (kept/putative) and `keep_vs_oracle` (kept relative to
+  the oracle's kept = #correct putative). Metric choices and the full model × gap matrices:
+  TRAINING.md §"Gap sweep".
 
 ## To-do
 

@@ -74,6 +74,41 @@ methods:
     matcher:    {type: nn_ratio, ratio: 0.8}
     filter:     {type: learned_mlp, model_path: geomatch/data/models/gaps/mlp_all_best.pt, thresh: 0.5}
 
+  - name: cnn_gap1                               # same sweep for the CNN (depth patches)
+    descriptor: {type: rootsift}
+    matcher:    {type: nn_ratio, ratio: 0.8}
+    filter:     {type: learned_cnn, model_path: geomatch/data/models/gaps/cnn_gap1_best.pt, thresh: 0.5}
+
+  - name: cnn_gap5
+    descriptor: {type: rootsift}
+    matcher:    {type: nn_ratio, ratio: 0.8}
+    filter:     {type: learned_cnn, model_path: geomatch/data/models/gaps/cnn_gap5_best.pt, thresh: 0.5}
+
+  - name: cnn_gap10
+    descriptor: {type: rootsift}
+    matcher:    {type: nn_ratio, ratio: 0.8}
+    filter:     {type: learned_cnn, model_path: geomatch/data/models/gaps/cnn_gap10_best.pt, thresh: 0.5}
+
+  - name: cnn_gap20
+    descriptor: {type: rootsift}
+    matcher:    {type: nn_ratio, ratio: 0.8}
+    filter:     {type: learned_cnn, model_path: geomatch/data/models/gaps/cnn_gap20_best.pt, thresh: 0.5}
+
+  - name: cnn_gap50
+    descriptor: {type: rootsift}
+    matcher:    {type: nn_ratio, ratio: 0.8}
+    filter:     {type: learned_cnn, model_path: geomatch/data/models/gaps/cnn_gap50_best.pt, thresh: 0.5}
+
+  - name: cnn_gap80
+    descriptor: {type: rootsift}
+    matcher:    {type: nn_ratio, ratio: 0.8}
+    filter:     {type: learned_cnn, model_path: geomatch/data/models/gaps/cnn_gap80_best.pt, thresh: 0.5}
+
+  - name: cnn_all
+    descriptor: {type: rootsift}
+    matcher:    {type: nn_ratio, ratio: 0.8}
+    filter:     {type: learned_cnn, model_path: geomatch/data/models/gaps/cnn_all_best.pt, thresh: 0.5}
+
   - name: sift_oracle                            # REFERENCE ONLY: uses the ground truth
     descriptor: {type: rootsift}
     matcher:    {type: nn_ratio, ratio: 0.8}

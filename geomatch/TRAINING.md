@@ -223,3 +223,163 @@ for g in 1 5 10 20 50 80; do
   python -m geomatch.evaluation_pipeline --config geomatch/kitti_test_gapsweep_config.yaml --gap $g
 done
 ```
+
+### Metrics used (and why two different ones)
+- **Evaluation matrix metric: `precision_epi`** = share of the FINAL matches (after the
+  filter AND the always-on RANSAC) whose GT epipolar error is < 4 px. VO estimates the camera
+  motion from exactly this set, so its precision is the VO-relevant quality measure at the
+  fixed operating point (filter thresh 0.5, RANSAC 1 px).
+- **Training/val metric: AUC** (reported per run and per gap in `runs_*.json`). At training
+  time the decision threshold is not fixed yet, so a threshold-free ranking metric (AUC of the
+  keep-probability) is used to pick the best checkpoint and to compare models; the threshold
+  sweep on TEST (0.3/0.5/0.7 in the M2 config) then turns probabilities into keep masks.
+- **VO sample-count metrics** (new columns in `summary.csv`, both AFTER THE FILTER but BEFORE
+  RANSAC — RANSAC always runs after every filter; the post-RANSAC count is the `final` column):
+  `keep_ratio` = `filter_kept / putative` (share of the matcher output the filter keeps) and
+  `keep_vs_oracle` = `filter_kept / oracle's filter_kept` (kept count relative to the number of
+  truly correct putative matches; the oracle's `filter_kept` IS the correct-putative count).
+
+### CNN gap sweep (same protocol, --models cnn; weights `data/models/gaps/cnn_*`)
+
+| tag | val AUC | | tag | val AUC |
+|---|---|---|---|---|
+| cnn_gap1 | 0.8906 | | cnn_gap50 | 0.8850 |
+| cnn_gap5 | 0.8307 | | cnn_gap80 | 0.8689 |
+| cnn_gap10 | 0.8676 | | **cnn_all** | **0.9102** |
+| cnn_gap20 | 0.8848 | | (mlp_all for comparison) | 0.9240 |
+
+### Cross evaluation with CNN added (TEST 09–10, thresh 0.5) — precision_epi
+
+| model \ eval gap | 1 | 5 | 10 | 20 | 50 | 80 |
+|---|---|---|---|---|---|---|
+| sift (ransac only) | 0.998 | 0.963 | 0.899 | 0.819 | 0.417 | 0.111 |
+| mlp_gap5 | 0.999 | 0.983 | 0.960 | 0.904 | 0.783 | **0.529** |
+| mlp_all | 0.998 | 0.971 | 0.928 | 0.878 | **0.778** | 0.524 |
+| cnn_gap1 | 0.999 | 0.977 | 0.923 | 0.894 | 0.810 | 0.479 |
+| cnn_all | 0.998 | 0.977 | 0.930 | 0.889 | 0.679 | 0.323 |
+| sift_oracle | 1.000 | 1.000 | 1.000 | 1.000 | 1.000 | 1.000 |
+
+(full 16-method matrix incl. all single-gap models: `results/kitti_test_gapsweep_gap*_2026-11-23_*/summary.csv`)
+
+### Keep counts (VO sample budget) — gap 80 vs gap 1
+
+| method | keep_ratio@80 | keep_ratio@1 | keep_vs_oracle@80 | keep_vs_oracle@1 | final@80 (sift) |
+|---|---|---|---|---|---|
+| sift (no filter) | 1.000 | 1.000 | 21.77 | 1.03 | 1720 |
+| mlp_all | 0.048 | 0.953 | 1.04 | 0.98 | 168 |
+| cnn_all | 0.095 | 0.924 | 2.06 | 0.95 | — |
+| sift_oracle | 0.046 | 0.969 | 1.00 | 1.00 | 195 |
+
+Oracle kept = #correct putative: 385 @gap80, 205,993 @gap1 (putative 8,383 / 212,568).
+Reading: at gap 80 `mlp_all` keeps ~1.0× the oracle count (399 vs 385) — almost only correct
+matches — while sift keeps 21.8× (mostly outliers that RANSAC then has to winnow, 1,720 final).
+At gap 1 everything is easy and filters keep ~95% of putative. Runtime @gap80: learned
+filters ~285 ms/pair vs 431 ms for plain sift.
+
+Full keep matrices (all 16 methods × all 6 eval gaps; both post-filter, PRE-RANSAC):
+
+keep_ratio = filter_kept/putative:
+
+| model \ eval gap | 1 | 5 | 10 | 20 | 50 | 80 |
+|---|---|---|---|---|---|---|
+| sift | 1.000 | 1.000 | 1.000 | 1.000 | 1.000 | 1.000 |
+| mlp_gap1 | 0.741 | 0.521 | 0.395 | 0.251 | 0.083 | 0.034 |
+| mlp_gap5 | 0.772 | 0.686 | 0.558 | 0.383 | 0.122 | 0.050 |
+| mlp_gap10 | 0.747 | 0.690 | 0.590 | 0.407 | 0.138 | 0.060 |
+| mlp_gap20 | 0.629 | 0.609 | 0.554 | 0.442 | 0.192 | 0.096 |
+| mlp_gap50 | 0.618 | 0.627 | 0.581 | 0.471 | 0.217 | 0.114 |
+| mlp_gap80 | 0.768 | 0.688 | 0.611 | 0.466 | 0.205 | 0.097 |
+| mlp_all | 0.953 | 0.797 | 0.642 | 0.418 | 0.124 | 0.048 |
+| cnn_gap1 | 0.809 | 0.496 | 0.356 | 0.215 | 0.084 | 0.045 |
+| cnn_gap5 | 0.756 | 0.671 | 0.561 | 0.379 | 0.152 | 0.088 |
+| cnn_gap10 | 0.691 | 0.630 | 0.548 | 0.409 | 0.174 | 0.097 |
+| cnn_gap20 | 0.659 | 0.654 | 0.606 | 0.471 | 0.205 | 0.109 |
+| cnn_gap50 | 0.666 | 0.660 | 0.599 | 0.478 | 0.224 | 0.122 |
+| cnn_gap80 | 0.684 | 0.671 | 0.613 | 0.496 | 0.243 | 0.132 |
+| cnn_all | 0.924 | 0.751 | 0.636 | 0.431 | 0.166 | 0.095 |
+| sift_oracle | 0.969 | 0.858 | 0.718 | 0.510 | 0.152 | 0.046 |
+
+keep_vs_oracle = filter_kept / oracle filter_kept:
+
+| model \ eval gap | 1 | 5 | 10 | 20 | 50 | 80 |
+|---|---|---|---|---|---|---|
+| sift | 1.03 | 1.17 | 1.39 | 1.96 | 6.57 | 21.77 |
+| mlp_gap1 | 0.76 | 0.61 | 0.55 | 0.49 | 0.54 | 0.73 |
+| mlp_gap5 | 0.80 | 0.80 | 0.78 | 0.75 | 0.80 | 1.09 |
+| mlp_gap10 | 0.77 | 0.80 | 0.82 | 0.80 | 0.91 | 1.31 |
+| mlp_gap20 | 0.65 | 0.71 | 0.77 | 0.87 | 1.26 | 2.09 |
+| mlp_gap50 | 0.64 | 0.73 | 0.81 | 0.92 | 1.43 | 2.49 |
+| mlp_gap80 | 0.79 | 0.80 | 0.85 | 0.91 | 1.35 | 2.10 |
+| mlp_all | 0.98 | 0.93 | 0.89 | 0.82 | 0.82 | 1.04 |
+| cnn_gap1 | 0.83 | 0.58 | 0.50 | 0.42 | 0.55 | 0.98 |
+| cnn_gap5 | 0.78 | 0.78 | 0.78 | 0.74 | 1.00 | 1.92 |
+| cnn_gap10 | 0.71 | 0.73 | 0.76 | 0.80 | 1.14 | 2.11 |
+| cnn_gap20 | 0.68 | 0.76 | 0.84 | 0.92 | 1.35 | 2.36 |
+| cnn_gap50 | 0.69 | 0.77 | 0.83 | 0.94 | 1.47 | 2.65 |
+| cnn_gap80 | 0.71 | 0.78 | 0.85 | 0.97 | 1.59 | 2.87 |
+| cnn_all | 0.95 | 0.87 | 0.89 | 0.85 | 1.09 | 2.06 |
+| sift_oracle | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 |
+
+### Updated findings
+- CNN behaves like the MLP but slightly worse at gap 80 (cnn_all 0.323 vs mlp_all 0.524;
+  best single-gap CNN at gap80: cnn_gap1 0.479). MLP on the 22-d features is the better
+  wide-baseline cleaner; CNN's patch input is less discriminative here.
+- The `all`-gap models are the robust choice across the sweep for both architectures.
+- Keep counts confirm the VO trade-off: learned filters shrink the RANSAC input ~10-20x at
+  gap 80 while keeping ≈ the oracle number of correct matches (keep_vs_oracle ≈ 1), and are
+  faster per pair than no filter.
+
+### Reproduce (sweep incl. CNN)
+```bash
+for g in 1 5 10 20 50 80; do
+  python -m geomatch.train_filter --data geomatch/data/training/kitti_train_gap$g.npz \
+      --tag gap$g --models mlp cnn --out-dir geomatch/data/models/gaps --seed 0
+done
+python -m geomatch.train_filter --data geomatch/data/training/kitti_train_gap{1,5,10,20,50,80}.npz \
+    --tag all --models mlp cnn --out-dir geomatch/data/models/gaps --seed 0
+for g in 1 5 10 20 50 80; do
+  python -m geomatch.evaluation_pipeline --config geomatch/kitti_test_gapsweep_config.yaml --gap $g
+done
+```
+
+### Filter confusion matrix (TP/FP/TN/FN) — post-filter, PRE-RANSAC
+
+Computed from `per_pair.csv` (TP = correct_filter, FP = kept−TP, FN = correct_putative−TP,
+TN = putative−kept−FN); the pipeline now also writes `filter_tp/fp/tn/fn`, `filter_precision`
+and `filter_f1` into `summary.csv`/`per_pair.csv` directly. "Correct" = GT epipolar < 4 px.
+
+Filter F1 (16 methods × 6 eval gaps):
+
+| model \ eval gap | 1 | 5 | 10 | 20 | 50 | 80 |
+|---|---|---|---|---|---|---|
+| sift (no filter) | 0.984 | 0.924 | 0.836 | 0.675 | 0.264 | 0.088 |
+| mlp_gap5 | 0.881 | 0.856 | 0.815 | 0.730 | 0.597 | 0.313 |
+| mlp_gap50 | 0.773 | 0.817 | 0.827 | 0.786 | 0.606 | 0.333 |
+| mlp_gap80 | 0.877 | 0.850 | 0.826 | 0.772 | 0.596 | 0.311 |
+| **mlp_all** | **0.981** | **0.911** | **0.844** | 0.743 | 0.583 | 0.283 |
+| cnn_gap1 | 0.903 | 0.703 | 0.596 | 0.493 | 0.428 | 0.189 |
+| cnn_all | 0.965 | 0.884 | 0.833 | 0.737 | 0.536 | 0.238 |
+| sift_oracle | 1.000 | 1.000 | 1.000 | 1.000 | 1.000 | 1.000 |
+
+Full TP/FP/TN/FN counts at the two extremes (all 16 methods in the result CSVs):
+
+| @gap1 (putative 212,568; correct 205,993) | TP | FP | TN | FN |
+|---|---|---|---|---|
+| sift | 205,993 | 6,575 | 0 | 0 |
+| mlp_all | 200,540 | 2,110 | 4,465 | 5,453 |
+| cnn_all | 194,211 | 2,209 | 4,366 | 11,782 |
+| sift_oracle | 205,993 | 0 | 6,575 | 0 |
+
+| @gap80 (putative 8,383; correct 385) | TP | FP | TN | FN |
+|---|---|---|---|---|
+| sift | 385 | 7,998 | 0 | 0 |
+| mlp_gap50 | 224 | 735 | 7,263 | 161 |
+| mlp_all | 111 | 288 | 7,710 | 274 |
+| cnn_all | 140 | 653 | 7,345 | 245 |
+| sift_oracle | 385 | 0 | 7,998 | 0 |
+
+Reading: at small gaps the `all` models are near-oracle (F1 0.98 @gap1). At gap 80 every
+filter trades recall for precision (drops most of the 7,998 wrong matches, TN, but also many
+of the 385 correct ones, FN) — the filter-stage F1 is only ~0.3 there, yet AFTER RANSAC the
+kept set reaches precision_epi 0.52 (mlp_gap5), which is why the eval matrix uses the
+post-RANSAC precision.

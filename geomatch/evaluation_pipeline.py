@@ -310,11 +310,17 @@ def run_method(method, img1, img2, depth1, depth2, T1, T2, K, ransac_cfg, correc
     epi = epi_filter[inliers]                                 # final
     rep = reprojection_error(pts1[r1], pts2[r2], z1[r1], z2[r2], T1, T2, K)
     rot_err, trans_err = relative_pose_error(R, t, T1, T2)
+    # confusion matrix of the FILTER (post-filter, pre-RANSAC): kept/dropped vs GT correct/wrong
+    tp = int((epi_filter < correct_px).sum())          # kept and correct
+    fp = len(k1) - tp                                   # kept but wrong
+    fn = int((epi_all < correct_px).sum()) - tp        # dropped but correct
+    tn = len(i1) - len(k1) - fn                         # dropped and wrong
     counts = dict(putative=len(i1), kept_by_filter=len(k1), final=len(r1),
                   correct_putative=int((epi_all < correct_px).sum()),
-                  correct_filter=int((epi_filter < correct_px).sum()),
+                  correct_filter=tp,
                   correct_final=int((epi < correct_px).sum()),
                   correct_reproj=int((rep < correct_px).sum()),
+                  filter_tp=tp, filter_fp=fp, filter_tn=tn, filter_fn=fn,
                   rot_err_deg=round(float(rot_err), 3),
                   trans_err_deg=round(float(trans_err), 3),
                   time_ms=round(time_ms, 1))
@@ -325,8 +331,17 @@ def run_method(method, img1, img2, depth1, depth2, T1, T2, K, ransac_cfg, correc
 
 def summarize(rows, epi_errors, auc_thresholds):
     """One row per method, totalled over all pairs: match counts, precision, recall, median
-    epipolar error, relative pose AUC and time. Unless named 'filter_...', columns describe
-    the final matches (after RANSAC)."""
+    epipolar error, relative pose AUC and time. Columns named 'filter_...' or 'keep_...' describe
+    the matches AFTER THE FILTER but BEFORE RANSAC; all other count/quality columns (final,
+    correct, precision_epi, recall, ...) describe the FINAL matches after RANSAC.
+
+    Evaluation metric used for the model comparisons: `precision_epi` = share of the FINAL
+    (post-RANSAC) matches whose GT epipolar error is < grading.correct_px — VO consumes exactly
+    this set to estimate the camera motion. `keep_ratio` = filter_kept / putative (how much of
+    the matcher output the FILTER keeps, pre-RANSAC — the VO-relevant "number of samples
+    kept"); `keep_vs_oracle` (added in main when an oracle method is present) = filter_kept /
+    oracle's filter_kept, i.e. the kept count relative to the number of truly correct matches.
+    To see what survives filter+RANSAC together, look at `final`."""
     def ratio(a, b):
         return round(a / b, 4) if b else 0.0
 
@@ -336,13 +351,23 @@ def summarize(rows, epi_errors, auc_thresholds):
         final = sum(x["final"] for x in r)
         correct = sum(x["correct_final"] for x in r)
         correct_putative = sum(x["correct_putative"] for x in r)
+        putative = sum(x["putative"] for x in r)
+        kept = sum(x["kept_by_filter"] for x in r)
         e = np.concatenate(errors)
         pose_errors = [max(x["rot_err_deg"], x["trans_err_deg"]) for x in r]
         aucs = pose_auc(pose_errors, auc_thresholds)
+        tp = sum(x["filter_tp"] for x in r)
+        fp = sum(x["filter_fp"] for x in r)
+        tn = sum(x["filter_tn"] for x in r)
+        fn = sum(x["filter_fn"] for x in r)
         summary.append({
             "method": name,
-            "putative": sum(x["putative"] for x in r),
-            "filter_kept": sum(x["kept_by_filter"] for x in r),
+            "putative": putative,
+            "filter_kept": kept,
+            "keep_ratio": ratio(kept, putative),
+            "filter_tp": tp, "filter_fp": fp, "filter_tn": tn, "filter_fn": fn,
+            "filter_precision": ratio(tp, tp + fp),
+            "filter_f1": round(2 * tp / max(2 * tp + fp + fn, 1), 4),
             "filter_recall": ratio(sum(x["correct_filter"] for x in r), correct_putative),
             "final": final,
             "correct": correct,
@@ -421,10 +446,17 @@ def main():
     wall_s = time.perf_counter() - t_start
 
     summary = summarize(rows, epi_errors, grading["pose_auc_deg"])
+    # VO-relevant extra: kept matches relative to the oracle's kept (truly correct) matches
+    oracle = [s for s in summary if "oracle" in s["method"]]
+    if oracle:
+        n_oracle = oracle[0]["filter_kept"]
+        for s in summary:
+            s["keep_vs_oracle"] = round(s["filter_kept"] / n_oracle, 4) if n_oracle else 0.0
     write_csv(out_dir / "per_pair.csv", rows)
     write_csv(out_dir / "summary.csv", summary)
     log.info(f"\nSUMMARY (a match is correct if its epipolar error < {grading['correct_px']} px; "
-             "columns describe the final matches after RANSAC unless named filter_...)")
+             "columns describe the final matches after RANSAC unless named filter_.../keep_..., "
+             "which are after the filter but BEFORE RANSAC)")
     log_table(summary)
     log.info("recall = correct final matches / correct matches before filter and RANSAC | "
              "auc@Xdeg = relative pose accuracy (1.0 = every pair's camera motion recovered perfectly)")
