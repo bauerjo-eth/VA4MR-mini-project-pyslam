@@ -1,0 +1,117 @@
+# TEST-SPLIT config: KITTI odometry sequences 09-10. ALL reported learned-filter numbers
+# come from runs with this config. Learned filters were trained on sequences 00-08 only
+# (kitti_train_config.yaml) — never on 09-10. See geomatch/TRAINING.md for provenance.
+# ENFORCED: the pipeline refuses to run learned_* filters on sequences their weights were
+# trained on, so pointing this config at 00-08 fails with an error instead of leaking.
+#
+# This config is the full comparison: every handcrafted filter + every learned model at
+# several decision thresholds + the GT oracle reference.
+#
+# Requires the external KITTI odometry dataset (base_path below or KITTI_ODOMETRY_PATH env var)
+# AND trained filter weights in geomatch/data/models/ (run geomatch/train_filter.py first).
+
+name: kitti_test
+
+dataset:
+  type: kitti_odometry
+  # base_path: /path/to/kitti_odometry/dataset   # or: export KITTI_ODOMETRY_PATH=...
+  sequences: ["09", "10"]                          # TEST split (held out from training)
+  pairs:
+    start: 6
+    stop: -1
+    step: 10
+    gap: 80
+
+depth:
+  model: depth-anything/DA3METRIC-LARGE
+
+ransac:
+  threshold_px: 1.0
+  confidence: 0.99
+
+grading:
+  correct_px: 4.0
+  pose_auc_deg: [5, 10, 20]
+
+# Descriptor/matcher are shared by all methods (rootsift + nn_ratio); only the filter differs.
+# time_ms_per_pair counts descriptor+match+filter+RANSAC fairly for every method, so the
+# difference vs the `sift` row is the filter's own cost.
+methods:
+  # ---- baselines ----
+  - name: sift
+    descriptor: {type: rootsift}
+    matcher:    {type: nn_ratio, ratio: 0.8}
+    filter:     {type: none}
+
+  # ---- handcrafted filters ----
+  - name: depth_valid
+    descriptor: {type: rootsift}
+    matcher:    {type: nn_ratio, ratio: 0.8}
+    filter:     {type: depth_valid}
+
+  - name: desc_thresh_0.5
+    descriptor: {type: rootsift}
+    matcher:    {type: nn_ratio, ratio: 0.8}
+    filter:     {type: desc_threshold, max_dist: 0.5}
+
+  - name: desc_thresh_1.0
+    descriptor: {type: rootsift}
+    matcher:    {type: nn_ratio, ratio: 0.8}
+    filter:     {type: desc_threshold, max_dist: 1.0}
+
+  - name: reldepth_0.1
+    descriptor: {type: rootsift}
+    matcher:    {type: nn_ratio, ratio: 0.8}
+    filter:     {type: relative_depth_threshold, rel_depth_thresh: 0.1}
+
+  - name: reldepth_0.2
+    descriptor: {type: rootsift}
+    matcher:    {type: nn_ratio, ratio: 0.8}
+    filter:     {type: relative_depth_threshold, rel_depth_thresh: 0.2}
+
+  - name: reldepth_0.4
+    descriptor: {type: rootsift}
+    matcher:    {type: nn_ratio, ratio: 0.8}
+    filter:     {type: relative_depth_threshold, rel_depth_thresh: 0.4}
+
+  # ---- learned filters (weights trained on TRAIN split 00-08) ----
+  - name: learned_linear_0.5
+    descriptor: {type: rootsift}
+    matcher:    {type: nn_ratio, ratio: 0.8}
+    filter:     {type: learned_linear, model_path: geomatch/data/models/linear_best.pt, thresh: 0.5}
+
+  - name: learned_mlp_0.3
+    descriptor: {type: rootsift}
+    matcher:    {type: nn_ratio, ratio: 0.8}
+    filter:     {type: learned_mlp, model_path: geomatch/data/models/mlp_best.pt, thresh: 0.3}
+
+  - name: learned_mlp_0.5
+    descriptor: {type: rootsift}
+    matcher:    {type: nn_ratio, ratio: 0.8}
+    filter:     {type: learned_mlp, model_path: geomatch/data/models/mlp_best.pt, thresh: 0.5}
+
+  - name: learned_mlp_0.7
+    descriptor: {type: rootsift}
+    matcher:    {type: nn_ratio, ratio: 0.8}
+    filter:     {type: learned_mlp, model_path: geomatch/data/models/mlp_best.pt, thresh: 0.7}
+
+  - name: learned_cnn_0.3
+    descriptor: {type: rootsift}
+    matcher:    {type: nn_ratio, ratio: 0.8}
+    filter:     {type: learned_cnn, model_path: geomatch/data/models/cnn_best.pt, thresh: 0.3}
+
+  - name: learned_cnn_0.5
+    descriptor: {type: rootsift}
+    matcher:    {type: nn_ratio, ratio: 0.8}
+    filter:     {type: learned_cnn, model_path: geomatch/data/models/cnn_best.pt, thresh: 0.5}
+
+  - name: learned_cnn_0.7
+    descriptor: {type: rootsift}
+    matcher:    {type: nn_ratio, ratio: 0.8}
+    filter:     {type: learned_cnn, model_path: geomatch/data/models/cnn_best.pt, thresh: 0.7}
+
+  # ---- reference ----
+  - name: sift_oracle
+    descriptor: {type: rootsift}
+    matcher:    {type: nn_ratio, ratio: 0.8}
+    filter:     {type: gt_epipolar, err_px: 4.0}

@@ -13,9 +13,19 @@ RANSAC is the same for every method, as in a SLAM front end: it fits the camera 
 (essential matrix) to the matches and keeps only the inliers. Grading compares the final
 matches and the estimated camera motion with the ground truth.
 
+Two dataset types are supported (see `dataset.type` in the config):
+
+  video           one video file + one KITTI poses file + hardcoded intrinsics
+                  (bundled KITTI 06; works out of the box, no external data needed)
+  kitti_odometry  the full KITTI odometry dataset: sequences/<seq>/image_0/*.png,
+                  sequences/<seq>/calib.txt (P0 -> K), poses/<seq>.txt.
+                  Requires the external dataset; set `base_path` in the config or the
+                  KITTI_ODOMETRY_PATH env var. Use sequences 00-08 for training and
+                  09-10 for evaluation (only 00-10 have ground-truth poses).
+
 Results are saved to geomatch/results/<name>_<timestamp>/:
   config.yaml    exact copy of the config used
-  per_pair.csv   one row per (pair, method)
+  per_pair.csv   one row per (sequence, pair, method)
   summary.csv    one row per method
   log.txt        everything printed during the run
 """
@@ -24,8 +34,10 @@ import argparse
 import csv
 import json
 import logging
+import os
 import shutil
 import time
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
@@ -46,6 +58,146 @@ RESULTS_DIR = Path(__file__).parent / "results"
 log = logging.getLogger("geomatch")
 
 
+# ---------- dataset ----------
+
+@dataclass
+class SequenceData:
+    """One sequence: its image pairs, the frames used by those pairs, GT poses, intrinsics."""
+    name: str                       # e.g. "kitti06" or "kitti09" — also the depth-cache key
+    pairs: list = field(default_factory=list)   # [(frame1, frame2)]
+    frames: dict = field(default_factory=dict)  # {frame index: RGB image}
+    poses: np.ndarray = None        # 4x4 camera-to-world per frame
+    K: np.ndarray = None            # 3x3 intrinsics
+
+
+def make_pairs(p, n_frames):
+    """(s, s+gap) for s in range(start, stop, step), clamped to the sequence length.
+    stop <= 0 means 'to the end of the sequence'."""
+    gap = p["gap"]
+    stop = p["stop"] if p["stop"] and p["stop"] > 0 else n_frames - gap
+    return [(s, s + gap) for s in range(p["start"], min(stop, n_frames - gap), p["step"])]
+
+
+def read_frames(video, idxs):
+    """Read selected frames (RGB) by decoding the video sequentially (seeking is unreliable)."""
+    cap, out, i = cv2.VideoCapture(video), {}, 0
+    while len(out) < len(idxs):
+        ok, frame = cap.read()
+        if not ok:
+            raise ValueError(f"{video}: could not read frames {sorted(idxs - out.keys())}")
+        if i in idxs:
+            out[i] = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        i += 1
+    return out
+
+
+def read_image_folder(image_dir, idxs):
+    """Read selected grayscale PNG frames from a KITTI image_0 folder, converted to RGB."""
+    out = {}
+    for i in sorted(idxs):
+        path = image_dir / f"{i:06d}.png"
+        gray = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
+        if gray is None:
+            raise ValueError(f"{path}: could not read image")
+        out[i] = cv2.cvtColor(gray, cv2.COLOR_GRAY2RGB)
+    return out
+
+
+def load_poses(path):
+    """KITTI poses file (3x4 camera-to-world per line) -> 4x4 poses array."""
+    poses_3x4 = np.loadtxt(path).reshape(-1, 3, 4)
+    poses = np.tile(np.eye(4), (len(poses_3x4), 1, 1))
+    poses[:, :3] = poses_3x4
+    return poses
+
+
+def load_video_dataset(ds):
+    """Single-video dataset (bundled KITTI 06). Backward compatible with the original config."""
+    pairs = make_pairs(ds["pairs"], 10**9)  # video mode: stop is explicit, no clamping needed
+    frames = read_frames(ds["video"], {i for pair in pairs for i in pair})
+    k = ds["intrinsics"]
+    K = np.array([[k["fx"], 0, k["cx"]], [0, k["fy"], k["cy"]], [0, 0, 1]])
+    return [SequenceData(name=ds.get("name", "video"), pairs=pairs, frames=frames,
+                         poses=load_poses(ds["poses"]), K=K)]
+
+
+def load_kitti_calib(seq_dir):
+    """K from the P0 line of a KITTI calib.txt (3x4 projection -> 3x3 intrinsics)."""
+    for line in (seq_dir / "calib.txt").read_text().splitlines():
+        if line.startswith("P0:"):
+            P0 = np.array([float(x) for x in line[3:].split()]).reshape(3, 4)
+            return P0[:, :3]
+    raise ValueError(f"{seq_dir}/calib.txt: no P0 line")
+
+
+def load_kitti_odometry_dataset(ds):
+    """Full KITTI odometry dataset, one SequenceData per sequence in `sequences`.
+
+    base_path resolution: config `base_path` first, then the KITTI_ODOMETRY_PATH env var.
+    Raises a clear error if the dataset is not present (other group members may not have it).
+    """
+    # NB: an empty/unset base_path must count as missing — Path("") == Path("."), so check
+    # `not base_path` explicitly instead of relying on Path("") to fail later.
+    base_path = ds.get("base_path") or os.environ.get("KITTI_ODOMETRY_PATH") or ""
+    if not base_path or not Path(base_path).is_dir():
+        raise FileNotFoundError(
+            "KITTI odometry dataset not found. Set `base_path` in the config's dataset block "
+            "or the KITTI_ODOMETRY_PATH env var to the extracted dataset root (the folder that "
+            "contains sequences/ and poses/). Download from http://www.cvlibs.net/datasets/kitti/"
+            "eval_odometry.php (data_odometry_gray.zip + poses). "
+            "Alternatively use the default evaluation_config.yaml, which needs only the bundled "
+            "KITTI 06 video in data/videos/kitti06/.")
+    base = Path(base_path)
+    out = []
+    for seq in ds["sequences"]:
+        seq_dir = base / "sequences" / seq
+        pose_file = base / "poses" / f"{seq}.txt"
+        image_dir = seq_dir / "image_0"
+        if not seq_dir.exists() or not pose_file.exists():
+            raise FileNotFoundError(
+                f"KITTI sequence {seq} incomplete: expected {seq_dir}/image_0/ and {pose_file}. "
+                f"Only sequences 00-10 have ground-truth poses.")
+        n_frames = len(list(image_dir.glob("*.png")))
+        pairs = make_pairs(ds["pairs"], n_frames)
+        frames = read_image_folder(image_dir, {i for pair in pairs for i in pair})
+        out.append(SequenceData(name=f"kitti{seq}", pairs=pairs, frames=frames,
+                                poses=load_poses(pose_file), K=load_kitti_calib(seq_dir)))
+    return out
+
+
+def load_dataset(ds):
+    """Config `dataset` block -> list of SequenceData. Dispatch on `type` (default: video)."""
+    dtype = ds.get("type", "video")
+    if dtype == "kitti_odometry":
+        return load_kitti_odometry_dataset(ds)
+    if dtype == "video":
+        return load_video_dataset(ds)
+    raise ValueError(f"unknown dataset type '{dtype}' (use 'video' or 'kitti_odometry')")
+
+
+def guard_against_train_split_leak(cfg, sequences):
+    """Refuse to evaluate a learned filter on sequences its weights were trained on.
+
+    The TRAIN/TEST split is sequence-level (TRAIN = 00-08, TEST = 09-10); every checkpoint
+    stores the sequences it was trained on, so a config that accidentally points the test
+    evaluation at training sequences fails loudly here instead of reporting leaked numbers.
+    """
+    for method in cfg["methods"]:
+        f_type, f_params = split_type(method["filter"])
+        if not f_type.startswith("learned_"):
+            continue
+        from geomatch.learned_filter import checkpoint_train_sequences, default_model_path
+        path = f_params.get("model_path") or default_model_path(f_type)
+        trained = checkpoint_train_sequences(path)
+        leak = sorted({s.name for s in sequences} & trained)
+        if leak:
+            raise ValueError(
+                f"method '{method['name']}' evaluates learned filter '{f_type}' with weights from "
+                f"'{path}', which were trained on {sorted(trained)} — but this config evaluates on "
+                f"{leak}, i.e. the TRAIN split. Learned-filter numbers must come from the TEST split "
+                f"(sequences 09-10, kitti_test_config.yaml) only. See geomatch/TRAINING.md.")
+
+
 # ---------- setup ----------
 
 def setup_output(cfg, config_path):
@@ -61,35 +213,6 @@ def setup_output(cfg, config_path):
         handler.setFormatter(logging.Formatter("%(message)s"))
         log.addHandler(handler)
     return out_dir
-
-
-def load_dataset(ds):
-    """Returns the image pairs [(frame1, frame2)], the frames {index: RGB image},
-    the 4x4 camera-to-world poses (one per frame) and the 3x3 intrinsics K."""
-    p = ds["pairs"]
-    pairs = [(s, s + p["gap"]) for s in range(p["start"], p["stop"], p["step"])]
-    frames = read_frames(ds["video"], {i for pair in pairs for i in pair})
-
-    poses_3x4 = np.loadtxt(ds["poses"]).reshape(-1, 3, 4)
-    poses = np.tile(np.eye(4), (len(poses_3x4), 1, 1))
-    poses[:, :3] = poses_3x4
-
-    k = ds["intrinsics"]
-    K = np.array([[k["fx"], 0, k["cx"]], [0, k["fy"], k["cy"]], [0, 0, 1]])
-    return pairs, frames, poses, K
-
-
-def read_frames(video, idxs):
-    """Read selected frames (RGB) by decoding the video sequentially (seeking is unreliable)."""
-    cap, out, i = cv2.VideoCapture(video), {}, 0
-    while len(out) < len(idxs):
-        ok, frame = cap.read()
-        if not ok:
-            raise ValueError(f"{video}: could not read frames {sorted(idxs - out.keys())}")
-        if i in idxs:
-            out[i] = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        i += 1
-    return out
 
 
 def split_type(block):
@@ -256,29 +379,37 @@ def main():
     with open(args.config, encoding="utf-8") as f:
         cfg = yaml.safe_load(f)
     out_dir = setup_output(cfg, args.config)
-    pairs, frames, poses, K = load_dataset(cfg["dataset"])
+    sequences = load_dataset(cfg["dataset"])
+    guard_against_train_split_leak(cfg, sequences)
     grading = cfg["grading"]
-    log.info(f"Running evaluation pipeline: {cfg['name']} ({len(pairs)} image pairs x {len(cfg['methods'])} methods)")
+    n_pairs = sum(len(s.pairs) for s in sequences)
+    log.info(f"Running evaluation pipeline: {cfg['name']} "
+             f"({len(sequences)} sequence(s), {n_pairs} image pairs x {len(cfg['methods'])} methods)")
     log.info(f"Results: {out_dir}")
-    depth_dir = cache_depth_maps(frames, cfg["depth"]["model"], cfg["dataset"]["name"])
 
     log.info("Methods (descriptor + matcher + filter, then RANSAC for all):")
     for method in cfg["methods"]:
         log.info(f"  {method['name']}: {describe(method)}")
 
     rows, epi_errors = [], {m["name"]: [] for m in cfg["methods"]}
-    progress = tqdm(pairs, desc="Image pairs", unit="pair")
-    for f1, f2 in progress:
-        depth1, depth2 = load_depth(depth_dir, f1), load_depth(depth_dir, f2)
-        log.debug(f"pair: frames {f1}-{f2}")
+    t_start = time.perf_counter()
+    for seq in sequences:
+        depth_dir = cache_depth_maps(seq.frames, cfg["depth"]["model"], seq.name)
+        progress = tqdm(seq.pairs, desc=f"pairs {seq.name}", unit="pair")
+        for f1, f2 in progress:
+            depth1, depth2 = load_depth(depth_dir, f1), load_depth(depth_dir, f2)
+            log.debug(f"pair: {seq.name} frames {f1}-{f2}")
 
-        cache = {}  # descriptors and matches of this pair, shared by the methods
-        for method in cfg["methods"]:
-            progress.set_postfix_str(f"running {method['name']}")
-            counts, epi = run_method(method, frames[f1], frames[f2], depth1, depth2,
-                                     poses[f1], poses[f2], K, cfg["ransac"], grading["correct_px"], cache)
-            rows.append({"frame1": f1, "frame2": f2, "method": method["name"], **counts})
-            epi_errors[method["name"]].append(epi)
+            cache = {}  # descriptors and matches of this pair, shared by the methods
+            for method in cfg["methods"]:
+                progress.set_postfix_str(f"running {method['name']}")
+                counts, epi = run_method(method, seq.frames[f1], seq.frames[f2], depth1, depth2,
+                                         seq.poses[f1], seq.poses[f2], seq.K,
+                                         cfg["ransac"], grading["correct_px"], cache)
+                rows.append({"sequence": seq.name, "frame1": f1, "frame2": f2,
+                             "method": method["name"], **counts})
+                epi_errors[method["name"]].append(epi)
+    wall_s = time.perf_counter() - t_start
 
     summary = summarize(rows, epi_errors, grading["pose_auc_deg"])
     write_csv(out_dir / "per_pair.csv", rows)
@@ -288,6 +419,7 @@ def main():
     log_table(summary)
     log.info("recall = correct final matches / correct matches before filter and RANSAC | "
              "auc@Xdeg = relative pose accuracy (1.0 = every pair's camera motion recovered perfectly)")
+    log.info(f"total wall time (depth cached, matching+filter+RANSAC+grading): {wall_s:.1f} s")
     log.info(f"\nsaved to {out_dir}")
 
 

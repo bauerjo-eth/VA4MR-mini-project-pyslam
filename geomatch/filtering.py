@@ -155,3 +155,45 @@ def _relative_depth_threshold(ctx, rel_depth_thresh=0.5, **params):
     the sum of depths is below rel_depth_thresh."""
     rel_depth = np.abs(ctx.z1[ctx.i1] - ctx.z2[ctx.i2]) / (ctx.z1[ctx.i1] + ctx.z2[ctx.i2])
     return rel_depth < rel_depth_thresh
+
+
+# ---------- learned filters (trained on the TRAIN split only — see geomatch/TRAINING.md) ----------
+
+_MODEL_CACHE = {}  # model_path -> (model, meta); loaded once per process
+
+
+def _get_learned_model(path):
+    if path not in _MODEL_CACHE:
+        from geomatch.learned_filter import load_model
+        _MODEL_CACHE[path] = load_model(path)  # raises FileNotFoundError with instructions if missing
+    return _MODEL_CACHE[path]
+
+
+@register("learned_mlp")
+def _learned_mlp(ctx, model_path="geomatch/data/models/mlp_best.pt", thresh=0.5, **params):
+    """Learned filter: MLP over per-match depth/descriptor features (22-d). Weights must be
+    trained on the TRAIN split (KITTI 00-08) via train_filter.py — never on the test split."""
+    from geomatch.learned_filter import build_mlp_features, predict_mlp
+    model, meta = _get_learned_model(model_path)
+    prob = predict_mlp(model, meta, build_mlp_features(ctx))
+    return prob > thresh
+
+
+@register("learned_linear")
+def _learned_linear(ctx, model_path="geomatch/data/models/linear_best.pt", thresh=0.5, **params):
+    """Learned filter: logistic regression on the same 22 features as learned_mlp."""
+    from geomatch.learned_filter import build_mlp_features, predict_mlp
+    model, meta = _get_learned_model(model_path)
+    prob = predict_mlp(model, meta, build_mlp_features(ctx))
+    return prob > thresh
+
+
+@register("learned_cnn")
+def _learned_cnn(ctx, model_path="geomatch/data/models/cnn_best.pt", thresh=0.5, **params):
+    """Learned filter: CNN over 2x32x32 log-depth patches at both matched keypoints plus the
+    descriptor distance. Weights must be trained on the TRAIN split (KITTI 00-08)."""
+    from geomatch.learned_filter import build_cnn_extra, build_cnn_patches, predict_cnn
+    model, meta = _get_learned_model(model_path)
+    patches = build_cnn_patches(ctx, meta.get("patch_size", 32))
+    prob = predict_cnn(model, meta, patches, build_cnn_extra(ctx))
+    return prob > thresh

@@ -1,0 +1,41 @@
+# TRAINING-SPLIT config: KITTI odometry sequences 00-08 (only 00-10 have GT poses).
+#
+# Used ONLY to collect training data for the learned filters:
+#   python -m geomatch.collect_training_data --config geomatch/kitti_train_config.yaml
+#
+# The learned filters are never evaluated on these sequences — evaluation uses
+# kitti_test_config.yaml (sequences 09-10). See geomatch/TRAINING.md for provenance.
+# ENFORCED: collect_training_data refuses configs that include the TEST sequences 09-10.
+#
+# Requires the external KITTI odometry dataset: set `base_path` below or the
+# KITTI_ODOMETRY_PATH env var to the extracted dataset root (contains sequences/ and poses/).
+
+name: kitti_train
+
+dataset:
+  type: kitti_odometry
+  # base_path: /path/to/kitti_odometry/dataset   # or: export KITTI_ODOMETRY_PATH=...
+  sequences: ["00", "01", "02", "03", "04", "05", "06", "07", "08"]   # TRAIN split
+  pairs:
+    start: 6
+    stop: -1        # -1 = to the end of each sequence
+    step: 20        # wider step than evaluation: enough pairs without predicting depth for all frames
+    gap: 80
+
+depth:
+  model: depth-anything/DA3METRIC-LARGE
+
+# RANSAC + grading are irrelevant for data collection but required by the config schema.
+ransac:
+  threshold_px: 1.0
+  confidence: 0.99
+grading:
+  correct_px: 4.0
+  pose_auc_deg: [5, 10, 20]
+
+# Data collection uses rootsift + nn_ratio only; `methods` is unused here but kept for schema.
+methods:
+  - name: sift
+    descriptor: {type: rootsift}
+    matcher:    {type: nn_ratio, ratio: 0.8}
+    filter:     {type: none}

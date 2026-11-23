@@ -171,6 +171,20 @@ methods:
     filter:     {type: my_filter}         # RANSAC follows automatically
 ```
 
+## Learned filters + KITTI train/test split
+
+- The pipeline supports the **full KITTI odometry dataset** (`dataset.type: kitti_odometry`,
+  sequences 00–21 on disk, GT poses for 00–10). Set `base_path` in the config or the
+  `KITTI_ODOMETRY_PATH` env var; per-sequence intrinsics come from each `calib.txt` (P0).
+  The default `evaluation_config.yaml` (bundled KITTI 06 video) still works without it.
+- **Split: TRAIN = sequences 00–08, TEST = 09–10** (`kitti_train_config.yaml` /
+  `kitti_test_config.yaml`). Learned filters are trained on TRAIN only and evaluated on TEST only.
+- Two learned filters are registered: `learned_mlp` (MLP on 22 depth/descriptor features) and
+  `learned_cnn` (CNN on 2×32×32 log-depth patches + descriptor distance). Train with
+  `python -m geomatch.collect_training_data` + `python -m geomatch.train_filter.py` (GPU, seeded);
+  weights land in `data/models/` (gitignored — retrain to reproduce). Full provenance,
+  hyperparameter runs, timings and test-split results: **[TRAINING.md](TRAINING.md)**.
+
 ## To-do
 
 - [ ] **Different image pair creation algorithm.** Pairs are currently fixed frame offsets
