@@ -8,7 +8,9 @@ For every image pair of every sequence in the config (TRAIN split: KITTI 00-08),
 RootSIFT matches and stores, per putative match:
   - MLP features (22-d, see learned_filter.build_mlp_features)
   - CNN patches (2 x 32 x 32 uint8 log-depth, see learned_filter.build_cnn_patches)
-  - label: 1 if the GT epipolar error < grading.correct_px (oracle label, training only)
+  - label: 1 if the GT epipolar error < grading.correct_px (oracle label, training only; default),
+  or — with `--label-metric ransac1px` — 1 if the match is an inlier of the 1 px essential-matrix
+  RANSAC the pipeline applies downstream (no GT pose needed for this label)
   - pair_id: which pair the match came from (so train/val can be split by pair, not by sample)
 
 Output: one .npz (default geomatch/data/training/kitti_train.npz) + a sidecar .json with
@@ -56,6 +58,12 @@ def main():
                         help="override the config gap; collect one pair set per gap (gap sweep). "
                              "Each pair is tagged with its gap (gap_ids in the .npz)")
     parser.add_argument("--step", type=int, default=None, help="override the config pair step")
+    parser.add_argument("--label-metric", choices=["epipolar", "ransac1px"], default="epipolar",
+                        help="training label: 'epipolar' = GT epipolar error < correct_px (default); "
+                             "'ransac1px' = inlier of the same 1 px essential-matrix RANSAC the "
+                             "pipeline applies downstream (estimated from the putative matches, "
+                             "no GT pose needed) — trains the filter to pre-eliminate matches "
+                             "RANSAC would drop anyway")
     parser.add_argument("--seed", type=int, default=0)
     args = parser.parse_args()
 
@@ -117,8 +125,14 @@ def main():
             ctx = MatchContext(i1=i1, i2=i2, pts1=pts1, pts2=pts2, des1=des1, des2=des2,
                                depth1=depth1, depth2=depth2, z1=z1, z2=z2, K=seq.K,
                                T1=seq.poses[f1], T2=seq.poses[f2])
-            labels = (epipolar_error(pts1[i1], pts2[i2], seq.poses[f1], seq.poses[f2], seq.K)
-                      < correct_px).astype(np.uint8)
+            if args.label_metric == "epipolar":
+                labels = (epipolar_error(pts1[i1], pts2[i2], seq.poses[f1], seq.poses[f2], seq.K)
+                          < correct_px).astype(np.uint8)
+            else:  # ransac1px: inlier of the pipeline's own 1 px essential-matrix RANSAC
+                from geomatch.evaluation_pipeline import ransac_relative_pose
+                _, _, inl = ransac_relative_pose(pts1[i1], pts2[i2], seq.K,
+                                                threshold_px=1.0, confidence=0.99999)
+                labels = inl.astype(np.uint8)
 
             # seeded subsample so every run collects the same matches
             if len(i1) > args.max_matches_per_pair:
@@ -153,6 +167,7 @@ def main():
         "config": str(args.config), "sequences": [s.name for s in sequences],
         "descriptor": desc_type, "matcher": f"{match_type}({match_params})",
         "correct_px": correct_px, "seed": args.seed, "gaps": gaps, "step": step,
+        "label_metric": args.label_metric,
         "max_matches_per_pair": args.max_matches_per_pair,
         "n_pairs": pair_counter, "n_samples": int(len(labels)),
         "n_correct": int(labels.sum()), "patch_size": PATCH_SIZE,
