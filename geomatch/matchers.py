@@ -49,6 +49,22 @@ def match_descriptors(name, des1, des2, **params):
     return MATCHERS[name](des1, des2, **params)
 
 
+@register_matcher("mutual_nn")
+def _mutual_nn(des1, des2, ratio=None):
+    """Mutual nearest neighbours (L2): i and j are each other's closest descriptor. The usual
+    matcher for SuperPoint descriptors. With `ratio`, also Lowe's ratio test in direction
+    1 -> 2 (best distance < ratio * second best), the same rule as nn_ratio uses for SIFT."""
+    d = (des1 ** 2).sum(1)[:, None] + (des2 ** 2).sum(1)[None] - 2 * des1 @ des2.T
+    d = np.sqrt(np.maximum(d, 0))
+    j = d.argmin(1)
+    i = d.argmin(0)
+    keep = i[j] == np.arange(len(des1))
+    if ratio is not None and d.shape[1] > 1:
+        two = np.partition(d, 1, axis=1)[:, :2]
+        keep &= two[:, 0] < ratio * two[:, 1]
+    return np.where(keep)[0], j[keep]
+
+
 @register_matcher("nn_ratio")
 def _nn_ratio(des1, des2, ratio=0.8):
     """Nearest neighbour + Lowe ratio test (baseline)."""

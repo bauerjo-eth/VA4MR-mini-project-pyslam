@@ -1,0 +1,77 @@
+# WP2 TEST config: frozen SuperPoint + learned depth branch vs. baselines, on KITTI odometry
+# sequences 09-10 (TEST split; the learned models were trained on 00-07 and validated on 08,
+# the pipeline refuses to run them on those). Model training: geomatch/train_depth_descriptor.py
+#
+#   python -m geomatch.evaluation_pipeline --config geomatch/wp2_kitti_test_config.yaml --gap 10
+#
+# Every method's matches go through the same RANSAC as in the other configs.
+# SAME MATCHER FOR ALL: mutual nearest neighbour + Lowe ratio test 0.8.
+
+name: wp2_kitti_test_mutualratio_all
+
+dataset:
+  type: kitti_odometry
+  base_path: datasets/kitti_odometry/dataset   # or KITTI_ODOMETRY_PATH
+  sequences: ["09", "10"]
+  pairs:
+    start: 6
+    stop: -1
+    step: 10
+    gap: 10                    # override with --gap
+
+depth:
+  model: depth-anything/DA3METRIC-LARGE
+
+ransac:
+  threshold_px: 1.0
+  confidence: 0.99
+
+grading:
+  correct_px: 4.0
+  pose_auc_deg: [5, 10, 20]
+
+methods:
+  - name: sift                                   # teammates' baseline
+    descriptor: {type: rootsift}
+    matcher:    {type: mutual_nn, ratio: 0.8}
+    filter:     {type: none}
+
+  - name: sift_depthgrid_w0.3                    # method 1: RootSIFT + handcrafted 5x5 log-depth grid
+    descriptor: {type: rootsift_depth, w: 0.3}
+    matcher:    {type: mutual_nn, ratio: 0.8}
+    filter:     {type: none}
+
+  - name: sift_depthsift_log_w0.3                # method 2 (Jonas): RootSIFT + SIFT on log-depth image
+    descriptor: {type: rootsift_depthsift, w: 0.3, transform: log}
+    matcher:    {type: mutual_nn, ratio: 0.8}
+    filter:     {type: none}
+
+  - name: sift_depthsift_log_w0.6
+    descriptor: {type: rootsift_depthsift, w: 0.6, transform: log}
+    matcher:    {type: mutual_nn, ratio: 0.8}
+    filter:     {type: none}
+
+  - name: superpoint                             # frozen SuperPoint alone (WP2 baseline)
+    descriptor: {type: superpoint}
+    matcher:    {type: mutual_nn, ratio: 0.8}
+    filter:     {type: none}
+
+  - name: superpoint_depthgrid_w0.3              # + handcrafted 5x5 log-depth grid
+    descriptor: {type: superpoint_depth, w: 0.3}
+    matcher:    {type: mutual_nn, ratio: 0.8}
+    filter:     {type: none}
+
+  - name: superpoint_learned_depth               # + learned depth branch (main WP2 model)
+    descriptor: {type: superpoint_learned, model_path: geomatch/data/models/wp2_depth_best.pt}
+    matcher:    {type: mutual_nn, ratio: 0.8}
+    filter:     {type: none}
+
+  - name: superpoint_learned_image               # CONTROL: same branch on the image instead of depth
+    descriptor: {type: superpoint_learned, model_path: geomatch/data/models/wp2_image_best.pt}
+    matcher:    {type: mutual_nn, ratio: 0.8}
+    filter:     {type: none}
+
+  - name: superpoint_oracle                      # REFERENCE ONLY: GT-pose filter
+    descriptor: {type: superpoint}
+    matcher:    {type: mutual_nn, ratio: 0.8}
+    filter:     {type: gt_epipolar, err_px: 4.0}

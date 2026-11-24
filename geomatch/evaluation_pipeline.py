@@ -184,6 +184,14 @@ def guard_against_train_split_leak(cfg, sequences):
     evaluation at training sequences fails loudly here instead of reporting leaked numbers.
     """
     for method in cfg["methods"]:
+        d_type, d_params = split_type(method["descriptor"])
+        if d_type == "superpoint_learned":  # WP2 learned descriptor branch
+            import torch
+            ck = torch.load(d_params["model_path"], map_location="cpu", weights_only=False)
+            leak = sorted({s.name for s in sequences} & set(ck["train_sequences"] + ck["val_sequences"]))
+            if leak:
+                raise ValueError(f"method '{method['name']}': {d_params['model_path']} was trained/validated "
+                                 f"on {leak}; evaluate it on the TEST split (09-10) only.")
         f_type, f_params = split_type(method["filter"])
         if not f_type.startswith("learned_"):
             continue

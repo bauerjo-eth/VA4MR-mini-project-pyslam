@@ -155,6 +155,46 @@ def _depthsift(img, depth, n=2000, transform="log", z_min=1.0, z_max=100.0):
     return pts, depth_sift(depth_to_image(depth, transform, z_min, z_max), kps)
 
 
+@register_descriptor("superpoint")
+def _superpoint(img, depth, n=2000):
+    """SuperPoint keypoints + 256-d descriptors (pretrained, frozen). Ignores the depth map."""
+    from geomatch.superpoint import superpoint
+    return superpoint(img, n=n)
+
+
+@register_descriptor("superpoint_depth")
+def _superpoint_depth(img, depth, n=2000, w=0.3, grid=5, size=8.0, scale=3.0):
+    """[SuperPoint | w * handcrafted depth descriptor] (the 5x5 log-depth grid of
+    rootsift_depth). SuperPoint keypoints have no size, so all use `size` pixels."""
+    from geomatch.superpoint import superpoint
+    pts, des = superpoint(img, n=n)
+    g = depth_descriptor(depth, pts, np.full(len(pts), size, np.float32), grid=grid, scale=scale)
+    return pts, concat(des, g, w)
+
+
+_learned = {}
+
+
+@register_descriptor("superpoint_learned")
+def _superpoint_learned(img, depth, model_path, n=2000):
+    """[SuperPoint (frozen) | w * learned branch], see depth_encoder.py and
+    train_depth_descriptor.py. The checkpoint says whether the branch reads the depth map
+    (main model) or the image (control); w is the learned weight."""
+    import torch
+    from geomatch.depth_encoder import load_model, make_input
+    from geomatch.superpoint import device, superpoint
+    if model_path not in _learned:
+        _learned[model_path] = load_model(model_path, device())[0]
+    model = _learned[model_path]
+    pts, des = superpoint(img, n=n)
+    arr = depth if model.mode == "depth" else cv2.cvtColor(img, cv2.COLOR_RGB2GRAY).astype(np.float32)
+    with torch.no_grad():
+        fmap = model(make_input(arr, model.mode)[None].to(device()))
+        d = model.describe(fmap, torch.from_numpy(pts).to(device()), *arr.shape[:2])
+        d = (d * model.w).cpu().numpy()
+    return pts, np.hstack([des, d]).astype(np.float32)
+
+
 @register_descriptor("rootsift_depthsift")
 def _rootsift_depthsift(img, depth, n=2000, w=0.5, transform="log", z_min=1.0, z_max=100.0):
     """[RootSIFT on the image | w * RootSIFT on the depth image], at the same keypoints. Both
