@@ -142,6 +142,22 @@ Seeds (0) + recorded hyperparams/versions make the runs replicable on other mach
 Models and data are gitignored (`geomatch/data/`) — retrain with the commands above;
 trained weights are not committed.
 
+## Model registry — which model was trained on WHAT dataset, tested on WHAT
+
+All training data: TRAIN split (KITTI 00–08) only. All evaluation: TEST split (09–10) only.
+Each checkpoint also stores this (`train_data`, `train_sequences`, `train_n_samples`,
+`train_n_pairs`, `train_gaps`, `train_tag`); each run log (`runs_*.json`) too.
+
+| model file | training dataset (file · gaps · step) | pairs · samples | val AUC | evaluated on |
+|---|---|---|---|---|
+| `data/models/{linear,mlp,cnn}_best.pt` | `training/kitti_train.npz` · gap 80 · step 20 | 985 · 36,179 | 0.843 / **0.895** / 0.863 | TEST 09–10, `kitti_test_config.yaml` (gap 80, 263 pairs) |
+| `data/models/gaps/<m>_gap{g}_best.pt` | `training/kitti_train_gap{g}.npz` · gap g · step 100 | ~201–206 · 7,446–41,200 | 0.840–0.892 | TEST 09–10, `kitti_test_gapsweep_config.yaml --gap G` |
+| `data/models/gaps/<m>_all_best.pt` | the six `kitti_train_gap*.npz` · gaps 1,5,10,20,50,80 · step 100 | 1,230 · **149,276** | **0.924** (mlp) / 0.910 (cnn) | same sweep, all eval gaps |
+| `data/models/gaps_dense/<m>_all20_best.pt` | `training/kitti_train_dense_gap*.npz` · gaps 1,5,10,20,50,80 · **step 20** | ~6,100 · ~TBD | TBD | TEST 09–10, `kitti_test_dense_config.yaml --gap 50/80` |
+| `data/models/gaps_ransac/*` | same gap files, `--label-metric ransac1px` | same | ≤0.933 | sweep `_ransac` config |
+
+⚠️ `mlp_best.pt` (step 20) and `gaps/mlp_gap80_best.pt` (step 100) are different models — see note below.
+
 ## Gap sweep (multi-gap training, cross-gap evaluation) — 2026-11-23
 
 Deviation from the single-gap protocol above: models are now identified by the gap(s) they
