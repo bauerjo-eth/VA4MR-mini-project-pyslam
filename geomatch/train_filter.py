@@ -241,10 +241,14 @@ def main():
     feats, patches, labels, pair_ids, gap_ids = load_data(args.data)
     log.info(f"data: {[str(p) for p in args.data]}  {len(labels)} samples, {labels.mean():.1%} correct, "
              f"{len(np.unique(pair_ids))} pairs, gaps={sorted(set(gap_ids.tolist()))}, tag='{args.tag}'")
+    data_provenance = {"data_files": [str(p) for p in args.data], "n_samples": int(len(labels)),
+                       "n_pairs": int(len(np.unique(pair_ids))),
+                       "gaps": sorted(set(gap_ids.tolist())), "tag": args.tag,
+                       "sequences": train_sequences}
 
     stamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
     runs_log = {"created": datetime.now().isoformat(timespec="seconds"), "data": [str(p) for p in args.data],
-                "tag": args.tag,
+                "tag": args.tag, **data_provenance,
                 "seed": args.seed, "val_frac": args.val_frac, "device": device,
                 "torch": torch.__version__, "cuda": torch.version.cuda,
                 "gpu": torch.cuda.get_device_name(0) if device == "cuda" else None,
@@ -272,6 +276,9 @@ def main():
                 "train_data": [str(p) for p in args.data],
                 "train_tag": args.tag,
                 "train_sequences": train_sequences,
+                "train_n_samples": int(len(labels)),
+                "train_n_pairs": int(len(np.unique(pair_ids))),
+                "train_gaps": sorted(set(gap_ids.tolist())),
             })
             entry = {"model": model_type, "run": run["name"], "val": val,
                      "train_time_s": round(train_s, 1), "checkpoint": str(ckpt_path)}

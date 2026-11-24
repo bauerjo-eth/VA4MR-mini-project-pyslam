@@ -164,8 +164,12 @@ _MODEL_CACHE = {}  # model_path -> (model, meta); loaded once per process
 
 def _get_learned_model(path):
     if path not in _MODEL_CACHE:
+        import torch
         from geomatch.learned_filter import load_model
-        _MODEL_CACHE[path] = load_model(path)  # raises FileNotFoundError with instructions if missing
+        model, meta = load_model(path)  # raises FileNotFoundError with instructions if missing
+        # inference on GPU whenever available (CPU fallback); DA3 depth prediction is on GPU too
+        model.to("cuda" if torch.cuda.is_available() else "cpu")
+        _MODEL_CACHE[path] = (model, meta)
     return _MODEL_CACHE[path]
 
 

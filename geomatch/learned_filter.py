@@ -245,22 +245,25 @@ def assert_train_split_only(seq_names):
 # ======================= inference (used by filtering.py) =======================
 
 def predict_mlp(model, meta, features):
-    """features (N, F) float32 -> keep-probabilities (N,) numpy."""
+    """features (N, F) float32 -> keep-probabilities (N,) numpy. Runs on the model's device
+    (GPU if the model was moved there — see filtering._get_learned_model)."""
+    dev = next(model.parameters()).device
     mean = np.asarray(meta["feat_mean"], np.float32)
     std = np.asarray(meta["feat_std"], np.float32)
-    x = torch.from_numpy((features - mean) / std)
+    x = torch.from_numpy((features - mean) / std).to(dev)
     with torch.no_grad():
-        return torch.sigmoid(model(x)).numpy()
+        return torch.sigmoid(model(x)).cpu().numpy()
 
 
 def predict_cnn(model, meta, patches, extra):
-    """patches (N, 2, P, P), extra (N, 1) -> keep-probabilities (N,) numpy."""
+    """patches (N, 2, P, P), extra (N, 1) -> keep-probabilities (N,) numpy. GPU if available."""
+    dev = next(model.parameters()).device
     P = meta.get("patch_size", PATCH_SIZE)
     if patches.shape[2] != P:
         raise ValueError(f"patch size {patches.shape[2]} != model's {P}")
     em = float(meta.get("extra_mean", 0.0))
     es = float(meta.get("extra_std", 1.0))
-    x = torch.from_numpy(patches)
-    e = torch.from_numpy((extra - em) / es)
+    x = torch.from_numpy(patches).to(dev)
+    e = torch.from_numpy((extra - em) / es).to(dev)
     with torch.no_grad():
-        return torch.sigmoid(model(x, e)).numpy()
+        return torch.sigmoid(model(x, e)).cpu().numpy()

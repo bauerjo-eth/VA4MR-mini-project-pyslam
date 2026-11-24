@@ -142,6 +142,22 @@ Seeds (0) + recorded hyperparams/versions make the runs replicable on other mach
 Models and data are gitignored (`geomatch/data/`) — retrain with the commands above;
 trained weights are not committed.
 
+## Model registry — which model was trained on WHAT dataset, tested on WHAT
+
+All training data: TRAIN split (KITTI 00–08) only. All evaluation: TEST split (09–10) only.
+Each checkpoint also stores this (`train_data`, `train_sequences`, `train_n_samples`,
+`train_n_pairs`, `train_gaps`, `train_tag`); each run log (`runs_*.json`) too.
+
+| model file | training dataset (file · gaps · step) | pairs · samples | val AUC | evaluated on |
+|---|---|---|---|---|
+| `data/models/{linear,mlp,cnn}_best.pt` | `training/kitti_train.npz` · gap 80 · step 20 | 985 · 36,179 | 0.843 / **0.895** / 0.863 | TEST 09–10, `kitti_test_config.yaml` (gap 80, 263 pairs) |
+| `data/models/gaps/<m>_gap{g}_best.pt` | `training/kitti_train_gap{g}.npz` · gap g · step 100 | ~201–206 · 7,446–41,200 | 0.840–0.892 | TEST 09–10, `kitti_test_gapsweep_config.yaml --gap G` |
+| `data/models/gaps/<m>_all_best.pt` | the six `kitti_train_gap*.npz` · gaps 1,5,10,20,50,80 · step 100 | 1,230 · **149,276** | **0.924** (mlp) / 0.910 (cnn) | same sweep, all eval gaps |
+| `data/models/gaps_dense/<m>_all20_best.pt` | `training/kitti_train_dense_gap*.npz` · gaps 1,5,10,20,50,80 · **step 20** | ~6,100 · ~TBD | TBD | TEST 09–10, `kitti_test_dense_config.yaml --gap 50/80` |
+| `data/models/gaps_ransac/*` | same gap files, `--label-metric ransac1px` | same | ≤0.933 | sweep `_ransac` config |
+
+⚠️ `mlp_best.pt` (step 20) and `gaps/mlp_gap80_best.pt` (step 100) are different models — see note below.
+
 ## Gap sweep (multi-gap training, cross-gap evaluation) — 2026-11-23
 
 Deviation from the single-gap protocol above: models are now identified by the gap(s) they
@@ -171,6 +187,39 @@ were trained on (`--tag`), training data can be collected for several gaps in on
 | 20 | 206 | 19,182 | 54.7% | 60 (0) | `kitti_train_gap20.npz` |
 | 50 | 205 | 9,536 | 25.3% | 106 (45) | `kitti_train_gap50.npz` |
 | 80 | 201 | 7,446 | 13.2% | 58 (0) | `kitti_train_gap80.npz` |
+
+### Which model classes / architectures the sweep trains
+
+The gap sweep trains **MLP and CNN only** (linear/logreg appears only in the single-gap M2
+comparison above). Per tag (`gap1…gap80`, `all`) the full grid from `train_filter.py` RUNS runs —
+5 MLP + 5 CNN configurations — and the best by val AUC is copied to `<model>_<tag>_best.pt`:
+
+- MLP runs: `h64x32_lr1e-3_ep30`, `h128x64x32_lr1e-3_ep30`, `h64x32_lr1e-4_ep50`,
+  `h256x128x64_lr1e-3_ep30`, `h64x32_do0.2_lr1e-3_ep40` (Linear→ReLU→(Dropout) stacks on the
+  22-d features, batch 4096)
+- CNN runs: `c16x32x64_lr1e-3_ep15`, `c32x64x128_lr1e-3_ep15`, `c16x32x64_lr5e-4_ep25`,
+  `c8x16x32_lr1e-3_ep25`, `c16x32x64_p16_lr1e-3_ep25` (3× Conv3x3+ReLU+MaxPool, then head; the
+  `_p16` run center-crops the stored 32×32 patches to 16×16)
+
+Winning architecture per tag (epipolar labels, weights `data/models/gaps/`):
+
+| tag | MLP best run (val AUC) | CNN best run (val AUC) |
+|---|---|---|
+| gap1 | h64x32_lr1e-4_ep50 (0.8817) | c16x32x64_p16_lr1e-3_ep25 (0.8906) |
+| gap5 | h256x128x64_lr1e-3_ep30 (0.8402) | c16x32x64_lr5e-4_ep25 (0.8307) |
+| gap10 | h256x128x64_lr1e-3_ep30 (0.8771) | c16x32x64_p16_lr1e-3_ep25 (0.8676) |
+| gap20 | h64x32_do0.2_lr1e-3_ep40 (0.8719) | c32x64x128_lr1e-3_ep15 (0.8848) |
+| gap50 | h256x128x64_lr1e-3_ep30 (0.8921) | c32x64x128_lr1e-3_ep15 (0.8850) |
+| gap80 | h256x128x64_lr1e-3_ep30 (0.8629) | c8x16x32_lr1e-3_ep25 (0.8689) |
+| all | h64x32_lr1e-3_ep30 (0.9240) | c16x32x64_lr5e-4_ep25 (0.9102) |
+
+### ⚠️ Two gap-80 MLPs: canonical vs sweep
+The canonical M2 model (`data/models/mlp_best.pt`, in `kitti_test_config.yaml`) was trained on
+`kitti_train.npz` = gap 80 at **step 20** (985 pairs / 36,179 samples, val AUC 0.895,
+precision_epi 0.359 @gap80). The sweep's `mlp_gap80` (`data/models/gaps/mlp_gap80_best.pt`) was
+trained on `kitti_train_gap80.npz` = gap 80 at **step 100** (201 pairs / 7,446 samples, val AUC
+0.863, precision_epi 0.348 @gap80) — step 100 for ALL sweep gaps so the tags stay comparable.
+Different training data AND different eval config; do not compare 0.359 vs 0.348 across tables.
 
 ### Models (MLP, GPU GTX 1660, seed 0, best-of-grid val AUC; weights `data/models/gaps/`)
 
@@ -383,3 +432,71 @@ filter trades recall for precision (drops most of the 7,998 wrong matches, TN, b
 of the 385 correct ones, FN) — the filter-stage F1 is only ~0.3 there, yet AFTER RANSAC the
 kept set reaches precision_epi 0.52 (mlp_gap5), which is why the eval matrix uses the
 post-RANSAC precision.
+
+## RANSAC-1px training labels ("does it survive 1 px RANSAC?") — 2026-11-24
+
+Experiment: re-label training data with `collect_training_data --label-metric ransac1px`
+(label = inlier of the same 1 px essential-matrix RANSAC the pipeline applies downstream;
+estimated from the putative matches, no GT pose needed) and repeat the full gap sweep.
+
+- Data: `data/training/kitti_train_ransac_gap{1,5,10,20,50,80}.npz` — positive fraction per gap:
+  68.5 / 79.9 / 72.2 / 57.3 / 33.5 / **25.5 %** (vs epipolar labels 96.3 / 84.8 / 72.4 / 54.7 /
+  25.3 / 13.2 %) — RANSAC-inlier ≠ GT-correct, the label is noisier.
+- Models: same MLP+CNN grid per tag, weights `data/models/gaps_ransac/`. Best val AUC:
+  gap1 0.885/0.896, gap5 0.837/0.823, gap10 0.904/0.889, gap20 0.934/0.933, gap50 0.811/0.826,
+  gap80 0.735/0.741, **all 0.883 (mlp, h256x128x64) / 0.843 (cnn)**.
+- Cross evaluation on TEST 09–10 (16 methods × 6 gaps, `kitti_test_gapsweep_ransac_config.yaml`),
+  precision_epi epipolar-label / ransac-label per gap:
+
+| method | g1 | g5 | g10 | g20 | g50 | g80 |
+|---|---|---|---|---|---|---|
+| sift (ransac only) | .998/.998 | .963/.963 | .899/.899 | .819/.819 | .417/.417 | .111/.111 |
+| mlp_all | .998/.997 | .971/.963 | .928/.895 | .878/.828 | .778/.574 | **.524/.241** |
+| mlp_gap5 | .999/.999 | .983/.976 | .960/.928 | .904/.867 | .783/.694 | .529/.371 |
+| cnn_all | .998/.998 | .977/.972 | .930/.912 | .889/.850 | .679/.640 | .323/.315 |
+
+  keep_ratio @gap80: mlp_all 0.048 (epi) vs 0.077 (ransac-label); time_ms_per_pair @gap80 ~285 ms
+  for both label types (vs ~430 sift). Results: `results/kitti_test_gapsweep_ransac_gap*_2026-11-24_*/`.
+
+**Conclusion:** training on "survives 1 px RANSAC" does NOT improve post-RANSAC accuracy — the
+label includes matches that are RANSAC-inliers but GT-wrong, so the filter keeps more
+outliers (higher keep_ratio) and final precision drops (mlp_all @gap80: 0.241 vs 0.524). The
+speed benefit is identical, because the pipeline runs RANSAC anyway and the filter already
+shrinks its input. GT-epipolar labels remain the better training signal for accuracy.
+
+### Online inference-time benchmark (batch size = 1) — hardware & device placement
+
+`python -m geomatch.bench_inference --pairs 30 --gap 80` — 30 TEST pairs (kitti09), depth
+predicted ONLINE (not from cache). **Hardware: NVIDIA GeForce GTX 1660 (6 GB), torch
+2.6.0+cu124, CUDA 12.4.** Device placement: DA3 depth prediction → **GPU (cuda)**; learned
+filter forward pass → **GPU (cuda)** (models moved to cuda in `filtering._get_learned_model`);
+RootSIFT descriptors, nn_ratio matching, essential-matrix RANSAC → **CPU (OpenCV)**.
+NOTE: times are online per-frame latency at **batch size 1**, not batched throughput.
+
+Per-pair mean over 30 pairs, gap 80 (ms). **Depth is charged only to methods that need it —
+RANSAC-only (plain rootsift, no filter) never computes a depth map:**
+
+| method | depth (GPU) | describe (CPU) | match (CPU) | filter (GPU) | ransac (CPU) | TOTAL | prec_epi* |
+|---|---|---|---|---|---|---|---|
+| ransac_only (no filter, **no depth needed**) | 0.0 | 225.1 | 21.4 | 0.0 | 177.2 | **423.8** | 0.016 |
+| mlp_epi_all @0.5 | 588.7 | 225.1 | 21.4 | 18.2 | 0.2 | **853.6** | 0.000 |
+| mlp_ransac_all @0.5 | 588.7 | 225.1 | 21.4 | 17.8 | 0.0 | **853.1** | 0.000 |
+| cnn_epi_all @0.5 | 588.7 | 225.1 | 21.4 | 14.8 | 1.4 | **851.4** | 0.000 |
+
+(*precision on these first 30 kitti09 pairs is low for every method incl. ransac-only —
+verified identical to the eval per_pair rows; the 263-pair average is 0.111.)
+Reading: the filter itself is cheap (~15–18 ms on GPU) and shrinks RANSAC from ~177 ms
+(all ~8.4 k putative matches) to ~0–1 ms (~400 kept) — but ONLINE the learned-filter front
+end must also pay for DA3 depth (~589 ms/pair on GPU), which RANSAC-only never needs. So
+online at batch size 1 the filtered pipeline is ~2× SLOWER per pair (853 vs 424 ms); the
+speed win only exists when depth is already available/cached (offline eval: ~285 vs ~430
+ms/pair, see gap-sweep tables). The filter's real online value is accuracy at wide baselines
+(precision_epi 0.52 vs 0.11 at gap 80 over all 263 pairs), not latency.
+
+Reproduce:
+```bash
+python -m geomatch.collect_training_data --config geomatch/kitti_train_config.yaml --gaps $g --step 100 --label-metric ransac1px --out geomatch/data/training/kitti_train_ransac_gap$g.npz --seed 0
+python -m geomatch.train_filter --data ... --tag gap$g --models mlp cnn --out-dir geomatch/data/models/gaps_ransac --seed 0
+python -m geomatch.evaluation_pipeline --config geomatch/kitti_test_gapsweep_ransac_config.yaml --gap $g
+python -m geomatch.bench_inference --pairs 30 --gap 80
+```
