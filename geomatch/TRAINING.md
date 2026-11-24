@@ -197,6 +197,14 @@ Winning architecture per tag (epipolar labels, weights `data/models/gaps/`):
 | gap80 | h256x128x64_lr1e-3_ep30 (0.8629) | c8x16x32_lr1e-3_ep25 (0.8689) |
 | all | h64x32_lr1e-3_ep30 (0.9240) | c16x32x64_lr5e-4_ep25 (0.9102) |
 
+### ⚠️ Two gap-80 MLPs: canonical vs sweep
+The canonical M2 model (`data/models/mlp_best.pt`, in `kitti_test_config.yaml`) was trained on
+`kitti_train.npz` = gap 80 at **step 20** (985 pairs / 36,179 samples, val AUC 0.895,
+precision_epi 0.359 @gap80). The sweep's `mlp_gap80` (`data/models/gaps/mlp_gap80_best.pt`) was
+trained on `kitti_train_gap80.npz` = gap 80 at **step 100** (201 pairs / 7,446 samples, val AUC
+0.863, precision_epi 0.348 @gap80) — step 100 for ALL sweep gaps so the tags stay comparable.
+Different training data AND different eval config; do not compare 0.359 vs 0.348 across tables.
+
 ### Models (MLP, GPU GTX 1660, seed 0, best-of-grid val AUC; weights `data/models/gaps/`)
 
 | tag (trained on) | val AUC | per-gap val AUC (best run) |
