@@ -1,0 +1,45 @@
+# Phase 1 grid: every backbone x depth descriptor x filter, at every gap, on the TEST split.
+#
+#   python -m geomatch.bench.run geomatch/experiments/phase1.yaml
+#
+# Missing models are trained first (TRAIN split, best epoch on VAL). Names below are free;
+# `type` / `learned` / `input` refer to registered components (geomatch/components/).
+# A1..D2 as in the Phase 1 diagram: A/B = SIFT + geometric/learned, C/D = SuperPoint + ...,
+# 1 = with filter, 2 = without filter.
+
+name: phase1
+
+data:
+  base_path: datasets/kitti_odometry/dataset
+  depth_model: depth-anything/DA3METRIC-LARGE
+  train: ["00", "01", "02", "03", "04", "05", "06", "07"]
+  val: ["08"]
+  test: ["09", "10"]
+  test_pairs: {start: 6, step: 10, gaps: [10, 20, 80]}
+
+backbones:                       # components/backbones.py
+  sift: {n: 2000}
+  superpoint: {n: 2000}
+
+depth_descriptors:               # components/depth_descriptors.py
+  none: null                     # baseline: visual descriptor only
+  log_grid: {type: log_grid, w: 0.3}                         # geometric (Gregor)
+  depth_sift: {type: depth_sift, w: 0.3}                     # geometric (Jonas)
+  learned_depth: {learned: cnn_small, input: depth, dim: 64} # learned
+  learned_image: {learned: cnn_small, input: image, dim: 64} # CONTROL: same network on the image
+
+matcher: {type: mutual_nn, ratio: 0.8}   # the same for every method (geomatch/matchers.py)
+
+filters:                          # hand-designed: geomatch/filtering.py, learned: components/filters.py
+  none: {type: none}                                         # "2" in the diagram
+  rel_depth: {type: relative_depth_threshold, rel_depth_thresh: 0.2}   # WP3 hand-designed
+  learned_mlp: {learned: mlp, thresh: 0.5}                   # WP3 learned (David)
+
+oracle: true                      # + GT-epipolar filter per backbone (upper bound, reference only)
+
+ransac: {threshold_px: 1.0, confidence: 0.99}
+grading: {correct_px: 4.0, pose_auc_deg: [5, 10, 20]}
+
+training:
+  descriptor: {gaps: [5, 10, 20, 40], step: 10, epochs: 6, lr: 1.0e-3, accum: 4, max_val_pairs: 400}
+  filter: {gaps: [10, 20, 80], step: 50, max_matches_per_pair: 300}
