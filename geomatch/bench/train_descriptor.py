@@ -205,6 +205,7 @@ def train_descriptor(exp, backbone, depth_name, out_path):
     history = [{"epoch": 0, "val": v}]
     log.info(f"  epoch 0: val acc {v['all']['acc']:.4f} (visual alone {v['all']['acc_visual']:.4f})")
     best, t0 = -1, time.time()
+    partial = out_path.with_name(out_path.stem + ".partial.pt")
     extra = {"backbone": backbone, "depth_name": depth_name, "spec": spec, "training": c,
              "train_sequences": [s.name for s in sequences(exp, "train")],
              "val_sequences": [s.name for s in sequences(exp, "val")]}
@@ -230,6 +231,7 @@ def train_descriptor(exp, backbone, depth_name, out_path):
                  f"(visual alone {v['all']['acc_visual']:.4f}) {time.time() - t0:.0f} s")
         if acc > best:
             best = acc
-            model.save(out_path, {**extra, "epoch": epoch, "val": v})
+            model.save(partial, {**extra, "epoch": epoch, "val": v})
+    partial.rename(out_path)  # only a finished training counts as a model (an interrupted run retrains)
     out_path.with_suffix(".json").write_text(json.dumps({**extra, "history": history}, indent=2, default=str))
     log.info(f"  best val acc {best:.4f} (visual alone {history[0]['val']['all']['acc_visual']:.4f}) -> {out_path.name}")
