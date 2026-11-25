@@ -75,6 +75,8 @@ cpp/core/slam/tests_py/test_data
 
 leftover/
 results/
+# dataset downloads (e.g. scripts/download_tum.sh)
+datasets/
 
 .venv/
 
